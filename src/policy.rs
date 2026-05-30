@@ -26,6 +26,7 @@ pub(crate) struct NetworkAccess {
     pub(crate) restrict_connect_tcp: bool,
     pub(crate) connect_tcp_ports: Vec<u16>,
     pub(crate) restrict_bind_tcp: bool,
+    pub(crate) local_tcp_bind: bool,
 }
 
 pub(crate) fn lower_sandbox_policy(
@@ -86,6 +87,7 @@ fn lower_network_policy(network: &SandboxNetwork) -> Result<NetworkAccess> {
         restrict_connect_tcp: true,
         connect_tcp_ports,
         restrict_bind_tcp: !network.allow_local_binding,
+        local_tcp_bind: network.allow_local_binding,
     })
 }
 

@@ -29,9 +29,11 @@ sandbox is applied, direct TCP connections are denied by default.
 `httpProxyPort` and `socksProxyPort` allow direct connections to configured
 proxy ports.
 
-`allowLocalBinding` leaves TCP binding unrestricted because Landlock cannot
-process local addresses. `landstrip` does not currently provide domain, UDP, or
-address-based network filtering for the time being.
+`allowLocalBinding` allows TCP binding to loopback addresses. Because Landlock
+cannot process local addresses, this mode uses a seccomp user-notification
+broker for `bind(2)` and fails closed if that facility is unavailable.
+`landstrip` does not currently provide domain, UDP, or general address-based
+network filtering for the time being.
 
 ## Documenting errors
 

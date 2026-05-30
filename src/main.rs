@@ -10,6 +10,7 @@ mod error;
 mod landlock;
 mod paths;
 mod policy;
+mod seccomp;
 mod traversal;
 
 use crate::cli::parse_cli;
@@ -19,7 +20,6 @@ use crate::landlock::enforce_access_policy;
 use crate::policy::lower_sandbox_policy;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
 use std::process::{self, Command};
 
 fn main() {
@@ -35,7 +35,14 @@ fn run() -> Result<()> {
 
     log::debug!("policy: base {}", cli.policy_base.display());
     let settings = load_settings(&cli.policy_paths)?;
-    apply_sandbox(&settings, &cli.policy_base)?;
+    let policy = lower_sandbox_policy(&settings.filesystem, &settings.network, &cli.policy_base)?;
+
+    if policy.network_access.local_tcp_bind {
+        let status = seccomp::run_local_bind(&policy, &cli.command, &cli.command_args)?;
+        process::exit(status);
+    }
+
+    enforce_access_policy(&policy)?;
     exec_command(&cli.command, &cli.command_args)
 }
 
@@ -45,12 +52,6 @@ fn init_logger(debug: bool) {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
         .format_timestamp(None)
         .init();
-}
-
-fn apply_sandbox(settings: &config::Settings, policy_base: &Path) -> Result<()> {
-    let policy = lower_sandbox_policy(&settings.filesystem, &settings.network, policy_base)?;
-
-    enforce_access_policy(&policy)
 }
 
 fn exec_command(command: &OsStr, args: &[OsString]) -> Result<()> {

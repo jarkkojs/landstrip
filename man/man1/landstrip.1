@@ -1,4 +1,4 @@
-.Dd May 30, 2026
+.Dd May 31, 2026
 .Dt LANDSTRIP 1
 .Os
 .Sh NAME
@@ -90,9 +90,13 @@ and
 .Va socksProxyPort
 settings allow direct connections to configured proxy ports.
 .Va allowLocalBinding
-leaves TCP binding unrestricted because Landlock cannot process local addresses.
+allows TCP binding to loopback addresses. Because Landlock cannot process local
+addresses, this mode uses a seccomp user-notification broker for
+.Xr bind 2
+and fails closed if that facility is unavailable.
 .Nm
-does not currently provide domain, UDP, or address-based network filtering.
+does not currently provide domain, UDP, or general address-based network
+filtering.
 .Sh SANDBOX MODEL
 Landlock rules are tied to filesystem objects opened while the sandbox is
 created, not to path strings. If an allowed directory is removed and the same
@@ -106,10 +110,12 @@ paths match a previous traversal result.
 .Sh EXIT STATUS
 On success,
 .Nm
-is replaced by
+is usually replaced by
 .Ar command
-and returns that command's exit status. If policy loading or sandbox setup
-fails,
+and returns that command's exit status. When seccomp user notification is needed,
+.Nm
+supervises the sandboxed child and exits with the child's status. If policy
+loading or sandbox setup fails,
 .Nm
 prints an error and exits non-zero.
 Usage errors exit with status 2.
