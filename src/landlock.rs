@@ -9,10 +9,7 @@ use landlock::{
 };
 use std::path::{Path, PathBuf};
 
-pub(crate) fn enforce_access_policy(
-    policy: &AccessPolicy,
-    fail_if_unavailable: bool,
-) -> Result<()> {
+pub(crate) fn enforce_access_policy(policy: &AccessPolicy) -> Result<()> {
     let write_access = AccessFs::from_write(ABI::V7);
     let read_access = AccessFs::ReadFile | AccessFs::ReadDir;
     let handled_access = match &policy.read_access {
@@ -41,16 +38,12 @@ pub(crate) fn enforce_access_policy(
 
     match status.ruleset {
         RulesetStatus::FullyEnforced => Ok(()),
-        RulesetStatus::PartiallyEnforced => {
-            handle_incomplete_sandbox("landlock: partially enforced", fail_if_unavailable)
-        }
-        RulesetStatus::NotEnforced => {
-            handle_incomplete_sandbox("landlock: not enforced", fail_if_unavailable)
-        }
+        RulesetStatus::PartiallyEnforced => Err(Error::message("landlock: partially enforced")),
+        RulesetStatus::NotEnforced => Err(Error::message("landlock: not enforced")),
     }
 }
 
-fn handle_network_access(mut ruleset: Ruleset, policy: &AccessPolicy) -> Result<Ruleset> {
+fn handle_network_access(ruleset: Ruleset, policy: &AccessPolicy) -> Result<Ruleset> {
     let mut access = BitFlags::<AccessNet>::EMPTY;
 
     if policy.network_access.restrict_connect_tcp {
@@ -65,11 +58,9 @@ fn handle_network_access(mut ruleset: Ruleset, policy: &AccessPolicy) -> Result<
         return Ok(ruleset);
     }
 
-    ruleset = ruleset
+    ruleset
         .handle_access(access)
-        .map_err(|source| Error::with_source("landlock: network rights", source))?;
-
-    Ok(ruleset)
+        .map_err(|source| Error::with_source("landlock: network rights", source))
 }
 
 fn add_path_rules(
@@ -112,13 +103,4 @@ fn access_for_path(path: &Path, access: BitFlags<AccessFs>) -> BitFlags<AccessFs
     } else {
         access & AccessFs::from_file(ABI::V7)
     }
-}
-
-fn handle_incomplete_sandbox(message: &str, fail_if_unavailable: bool) -> Result<()> {
-    if fail_if_unavailable {
-        return Err(Error::message(message));
-    }
-
-    log::warn!("{message}");
-    Ok(())
 }

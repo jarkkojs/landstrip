@@ -9,24 +9,14 @@ use std::io::{self, Read};
 use std::path::PathBuf;
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct Settings {
-    pub(crate) sandbox: Option<Sandbox>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct Sandbox {
-    pub(crate) enabled: bool,
-    pub(crate) fail_if_unavailable: bool,
-    pub(crate) filesystem: Option<SandboxFilesystem>,
-    pub(crate) network: Option<SandboxNetwork>,
+    pub(crate) filesystem: SandboxFilesystem,
+    pub(crate) network: SandboxNetwork,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct SandboxFilesystem {
     pub(crate) allow_write: Vec<String>,
     pub(crate) deny_write: Vec<String>,
@@ -35,8 +25,7 @@ pub(crate) struct SandboxFilesystem {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct SandboxNetwork {
     pub(crate) allow_local_binding: bool,
     pub(crate) http_proxy_port: Option<u16>,

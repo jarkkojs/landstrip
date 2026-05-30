@@ -21,10 +21,10 @@ allowlist, applies that ruleset to itself, and then executes
 If no policy file is specified, the policy document is read from standard
 input.
 .Pp
-The policy format is compatible with Claude Code settings files for the fields
-that
+The accepted policy format is a strict subset of Anthropic Sandbox Runtime
+settings for the fields that
 .Nm
-uses. Unknown JSON fields are ignored.
+uses. Unknown JSON fields are rejected.
 .Sh OPTIONS
 .Bl -tag -width Ds
 .It Fl -debug
@@ -43,21 +43,18 @@ Print usage information and exit.
 The relevant policy shape is:
 .Bd -literal -offset indent
 {
-  "sandbox": {
-    "enabled": true,
-    "failIfUnavailable": true,
-    "filesystem": {
-      "allowWrite": ["target", "~/.cargo"],
-      "denyWrite": [".git/hooks"],
-      "denyRead": ["~/.ssh"],
-      "allowRead": ["~/.ssh/config"]
-    },
-    "network": {
-      "httpProxyPort": 8080,
-      "socksProxyPort": 8081,
-      "allowLocalBinding": false,
-      "allowedDomains": ["api.anthropic.com"]
-    }
+  "filesystem": {
+    "allowWrite": [".", "~/.cargo"],
+    "denyWrite": [".git/hooks"],
+    "denyRead": ["~/.ssh"],
+    "allowRead": ["~/.ssh/config"]
+  },
+  "network": {
+    "httpProxyPort": 8080,
+    "socksProxyPort": 8081,
+    "allowLocalBinding": false,
+    "allowedDomains": ["api.anthropic.com"],
+    "deniedDomains": []
   }
 }
 .Ed
@@ -70,9 +67,9 @@ and
 .Sq ~/
 prefixes resolve to the current user's home directory.
 .Pp
-Write access starts with the current directory and its descendants, plus any
+Write access is denied by default. The
 .Va allowWrite
-paths. The
+paths are granted. The
 .Va denyWrite
 paths are subtracted by traversing the current directory tree and allowing only
 the remaining roots.
@@ -87,17 +84,15 @@ and subtracting denied paths. Entries in
 .Va allowRead
 are then added back to the read allowlist.
 .Pp
-When
-.Va network
-is present, direct TCP connections are denied by default. The
+Direct TCP connections and binding are denied by default. The
 .Va httpProxyPort
 and
 .Va socksProxyPort
-settings are fully supported.
+settings allow direct connections to configured proxy ports.
 .Va allowLocalBinding
 leaves TCP binding unrestricted because Landlock cannot process local addresses.
 .Nm
-neither does not currently provide domain, UDP, nor address-based network filtering.
+does not currently provide domain, UDP, or address-based network filtering.
 .Sh SANDBOX MODEL
 Landlock rules are tied to filesystem objects opened while the sandbox is
 created, not to path strings. If an allowed directory is removed and the same

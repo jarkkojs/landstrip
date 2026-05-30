@@ -13,7 +13,7 @@ mod policy;
 mod traversal;
 
 use crate::cli::parse_cli;
-use crate::config::{SandboxFilesystem, load_settings};
+use crate::config::load_settings;
 use crate::error::{Error, Result};
 use crate::landlock::enforce_access_policy;
 use crate::policy::lower_sandbox_policy;
@@ -48,19 +48,9 @@ fn init_logger(debug: bool) {
 }
 
 fn apply_sandbox(settings: &config::Settings, policy_base: &Path) -> Result<()> {
-    let Some(sandbox) = &settings.sandbox else {
-        return Ok(());
-    };
+    let policy = lower_sandbox_policy(&settings.filesystem, &settings.network, policy_base)?;
 
-    if !sandbox.enabled {
-        return Ok(());
-    }
-
-    let default_filesystem = SandboxFilesystem::default();
-    let filesystem = sandbox.filesystem.as_ref().unwrap_or(&default_filesystem);
-    let policy = lower_sandbox_policy(filesystem, sandbox.network.as_ref(), policy_base)?;
-
-    enforce_access_policy(&policy, sandbox.fail_if_unavailable)
+    enforce_access_policy(&policy)
 }
 
 fn exec_command(command: &OsStr, args: &[OsString]) -> Result<()> {

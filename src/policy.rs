@@ -21,7 +21,7 @@ pub(crate) enum ReadAccess {
     AllowRoots(Vec<PathBuf>),
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct NetworkAccess {
     pub(crate) restrict_connect_tcp: bool,
     pub(crate) connect_tcp_ports: Vec<u16>,
@@ -30,14 +30,14 @@ pub(crate) struct NetworkAccess {
 
 pub(crate) fn lower_sandbox_policy(
     filesystem: &SandboxFilesystem,
-    network: Option<&SandboxNetwork>,
+    network: &SandboxNetwork,
     policy_base: &Path,
 ) -> Result<AccessPolicy> {
     let home_dir = dirs::home_dir();
     let home = home_dir.as_deref();
     let policy_base = absolute_policy_base(policy_base)?;
 
-    let write_allow = resolve_write_roots(filesystem, &policy_base, home)?;
+    let write_allow = resolve_paths(&filesystem.allow_write, &policy_base, home)?;
     let write_deny = resolve_paths(&filesystem.deny_write, &policy_base, home)?;
     let write_roots = subtract_denied_roots(write_allow, &write_deny)
         .map_err(|source| Error::with_source("policy: write traversal", source))?;
@@ -61,41 +61,37 @@ pub(crate) fn lower_sandbox_policy(
     })
 }
 
-fn lower_network_policy(source: Option<&SandboxNetwork>) -> Result<NetworkAccess> {
-    let Some(source) = source else {
-        return Ok(NetworkAccess::default());
-    };
-
+fn lower_network_policy(network: &SandboxNetwork) -> Result<NetworkAccess> {
     let mut connect_tcp_ports = Vec::new();
     push_proxy_port(
         &mut connect_tcp_ports,
-        source.http_proxy_port,
+        network.http_proxy_port,
         "httpProxyPort",
     )?;
     push_proxy_port(
         &mut connect_tcp_ports,
-        source.socks_proxy_port,
+        network.socks_proxy_port,
         "socksProxyPort",
     )?;
     connect_tcp_ports.sort_unstable();
     connect_tcp_ports.dedup();
 
-    if (!source.allowed_domains.is_empty() || !source.denied_domains.is_empty())
-        && connect_tcp_ports.is_empty()
-    {
+    let has_domain_policy =
+        !network.allowed_domains.is_empty() || !network.denied_domains.is_empty();
+    if has_domain_policy && connect_tcp_ports.is_empty() {
         return Err(Error::message(
             "policy: network domains require httpProxyPort or socksProxyPort",
         ));
     }
 
-    if !source.allowed_domains.is_empty() || !source.denied_domains.is_empty() {
+    if has_domain_policy {
         log::warn!("network domain filtering is delegated to the configured proxy port");
     }
 
     Ok(NetworkAccess {
         restrict_connect_tcp: true,
         connect_tcp_ports,
-        restrict_bind_tcp: !source.allow_local_binding,
+        restrict_bind_tcp: !network.allow_local_binding,
     })
 }
 
@@ -112,22 +108,6 @@ fn push_proxy_port(ports: &mut Vec<u16>, port: Option<u16>, label: &str) -> Resu
 
     ports.push(port);
     Ok(())
-}
-
-fn resolve_write_roots(
-    source: &SandboxFilesystem,
-    policy_base: &Path,
-    home: Option<&Path>,
-) -> Result<Vec<PathBuf>> {
-    let mut roots = vec![policy_base.to_path_buf()];
-
-    for path in &source.allow_write {
-        roots.push(resolve_sandbox_path(path, policy_base, home)?);
-    }
-
-    normalize_roots(&mut roots);
-
-    Ok(roots)
 }
 
 fn resolve_paths(
