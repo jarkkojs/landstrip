@@ -1,0 +1,19 @@
+[package]
+authors = ["Jarkko Sakkinen <jarkko.sakkinen@iki.fi>"]
+description = "Landlock based agent sandbox with parametrized state"
+edition = "2024"
+license = "LGPL-2.1-or-later"
+name = "landstrip"
+readme = "README.md"
+rust-version = "1.85"
+version = "0.1.0"
+
+[dependencies]
+argh = "0.1.19"
+dirs = "6.0.0"
+env_logger = "0.11.10"
+landlock = "0.4"
+log = "0.4.30"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0.18"

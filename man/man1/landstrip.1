@@ -1,0 +1,104 @@
+.Dd May 30, 2026
+.Dt LANDSTRIP 1
+.Os
+.Sh NAME
+.Nm landstrip
+.Nd run a command inside a Landlock filesystem sandbox
+.Sh SYNOPSIS
+.Nm
+.Op Fl -debug
+.Op Fl p Ar policy
+.Op Fl -policy Ar policy
+.Ar command
+.Op Ar argument ...
+.Nm
+.Fl V
+.Sh DESCRIPTION
+.Nm
+loads a JSON policy, lowers the sandbox configuration into a Landlock
+allowlist, applies that ruleset to itself, and then executes
+.Ar command .
+If no policy file is specified, the policy document is read from standard
+input.
+.Pp
+The policy format is compatible with Claude Code settings files for the fields
+that
+.Nm
+uses. Unknown JSON fields are ignored.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl -debug
+Enable debug logging.
+.It Fl p Ar policy , Fl -policy Ar policy
+Read a JSON policy file. This option may be repeated. Later policy arguments
+are merged over earlier policy arguments. Object values are merged recursively,
+arrays are concatenated without duplicates, and scalar values replace earlier
+values. Commas are literal filename characters.
+.It Fl V , Fl -version
+Print version information and exit.
+.It Fl h , Fl -help
+Print usage information and exit.
+.El
+.Sh POLICY
+The relevant policy shape is:
+.Bd -literal -offset indent
+{
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "filesystem": {
+      "allowWrite": ["target", "~/.cargo"],
+      "denyWrite": [".git/hooks"],
+      "denyRead": ["~/.ssh"],
+      "allowRead": ["~/.ssh/config"]
+    }
+  }
+}
+.Ed
+.Pp
+Relative sandbox paths are resolved against the directory where
+.Nm
+was started. Absolute paths are used as-is. The
+.Sq ~
+and
+.Sq ~/
+prefixes resolve to the current user's home directory.
+.Pp
+Write access starts with the current directory and its descendants, plus any
+.Va allowWrite
+paths. The
+.Va denyWrite
+paths are subtracted by traversing the current directory tree and allowing only
+the remaining roots.
+.Pp
+Read access remains unrestricted when
+.Va denyRead
+is empty. When
+.Va denyRead
+contains entries, read access is lowered to an allowlist by traversing from
+.Pa /
+and subtracting denied paths. Entries in
+.Va allowRead
+are then added back to the read allowlist.
+.Sh SANDBOX MODEL
+Landlock rules are tied to filesystem objects opened while the sandbox is
+created, not to path strings. If an allowed directory is removed and the same
+pathname is created again later, the new directory is a different filesystem
+object and is not automatically allowed unless an allowed ancestor covers it.
+Existing open file descriptors are not retroactively revoked.
+.Pp
+The traversal step gives deny rules snapshot semantics. Directories created
+outside the sandbox after policy setup are not exposed merely because their
+paths match a previous traversal result.
+.Sh EXIT STATUS
+On success,
+.Nm
+is replaced by
+.Ar command
+and returns that command's exit status. If policy loading or sandbox setup
+fails,
+.Nm
+prints an error and exits non-zero.
+Usage errors exit with status 2.
+.Sh AUTHORS
+.An Jarkko Sakkinen Aq Mt jarkko.sakkinen@iki.fi
