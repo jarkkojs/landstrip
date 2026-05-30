@@ -78,14 +78,8 @@ fn lower_network_policy(network: &SandboxNetwork) -> Result<NetworkAccess> {
 
     let has_domain_policy =
         !network.allowed_domains.is_empty() || !network.denied_domains.is_empty();
-    if has_domain_policy && connect_tcp_ports.is_empty() {
-        return Err(Error::message(
-            "policy: network domains require httpProxyPort or socksProxyPort",
-        ));
-    }
-
     if has_domain_policy {
-        log::warn!("network domain filtering is delegated to the configured proxy port");
+        return Err(Error::message("policy: network domain filters unsupported"));
     }
 
     Ok(NetworkAccess {
