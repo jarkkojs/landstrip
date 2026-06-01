@@ -1,7 +1,9 @@
 # landstrip
 
-`landstrip` is an agent sandbox based on Landlock. The state is always
-parametrized and there are no pre-defined policy file or directory locations.
+`landstrip` is a sandbox for coding agents with parametrized state based on
+Landlock LSM and SECCOMP. The state is parametrized from JSON policy files,
+which are compatible with the JSON format of
+[Anthropic Sandbox Runtime](https://github.com/anthropic-experimental/sandbox-runtime).
 
 ## Sandbox model
 

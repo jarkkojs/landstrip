@@ -1,10 +1,10 @@
 [package]
 authors = ["Jarkko Sakkinen <jarkko.sakkinen@iki.fi>"]
-description = "Landlock based agent sandbox with parametrized state"
+description = "Sandbox for coding agents with parametrized state"
 edition = "2024"
 license = "LGPL-2.1-or-later"
-homepage = "https://codeberg.org/jarkko/landstrip"
-repository = "https://codeberg.org/jarkko/landstrip"
+homepage = "https://github.com/jarkkojs/landstrip"
+repository = "https://github.com/jarkkojs/landstrip"
 name = "landstrip"
 readme = "README.md"
 rust-version = "1.85"
