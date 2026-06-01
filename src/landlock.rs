@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
+//! Landlock enforcement for lowered filesystem and TCP port rules.
+//!
+//! Filesystem rules grant access to objects opened while creating the ruleset.
+//! This gives deny traversal snapshot semantics: a removed and recreated path is
+//! a new object unless an allowed ancestor covers it.
+
 use crate::error::{Error, Result};
 use crate::policy::{AccessPolicy, ReadAccess};
 use landlock::{

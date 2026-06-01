@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
+//! File descriptor cleanup before executing the sandboxed command.
+//!
+//! Descriptors above stdio are closed so ambient inherited handles do not bypass
+//! the sandbox.
+
 use nix::errno::Errno;
 use std::fs;
 use std::os::fd::RawFd;

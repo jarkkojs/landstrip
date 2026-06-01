@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
+//! Seccomp filters and user-notification broker for network policy.
+//!
+//! Direct TCP is denied by default. Configured proxy ports are allowed only on
+//! loopback, and local TCP bind requires `allowLocalBinding`. Non-TCP INET,
+//! packet, and netlink sockets are blocked.
+//!
+//! Unix sockets are denied by default. `allowUnixSockets` mediates pathname
+//! `connect` and `bind`; abstract sockets, unnamed sockets, and `socketpair` are
+//! not path-mediated. `allowAllUnixSockets` permits new Unix sockets without
+//! path checks.
+
 use crate::error::{Error, Result};
 use crate::fd::close_inherited_fds;
 use crate::landlock::enforce_access_policy;

@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
+//! Policy lowering from JSON settings to backend access rules.
+//!
+//! Filesystem policy follows the Seatbelt-compatible shape. Writes start
+//! denied; `allowWrite` grants roots and `denyWrite` subtracts from them. Reads
+//! stay unrestricted unless `denyRead` is set; `allowRead` then adds paths back.
+//!
+//! Paths accept absolute names, names relative to the policy base, `~`, and the
+//! macOS-style `*`, `**`, `?`, and character-class globs. Globs are expanded
+//! while lowering the policy.
+
 use crate::config::{SandboxFilesystem, SandboxNetwork};
 use crate::error::{Error, PolicyPort, Result};
 use crate::paths::{normalize_path, normalize_path_lexically, normalize_roots};
