@@ -27,8 +27,13 @@ use std::process::{self, Command};
 
 fn main() {
     if let Err(error) = run() {
+        let exit_code = match error {
+            Error::Usage(_) => 2,
+            _ => 1,
+        };
+
         eprintln!("{error:?}");
-        process::exit(error.exit_code());
+        process::exit(exit_code);
     }
 }
 
@@ -47,18 +52,14 @@ fn run() -> Result<()> {
             Ipv4Addr::LOCALHOST,
             settings.network.http_proxy_port.unwrap_or(0),
         ))
-        .map_err(|source| Error::with_source("proxy: bind HTTP", source))?;
-        let http_addr = http_listener
-            .local_addr()
-            .map_err(|source| Error::with_source("proxy: HTTP address", source))?;
+        .map_err(Error::Io)?;
+        let http_addr = http_listener.local_addr().map_err(Error::Io)?;
         let socks_listener = TcpListener::bind((
             Ipv4Addr::LOCALHOST,
             settings.network.socks_proxy_port.unwrap_or(0),
         ))
-        .map_err(|source| Error::with_source("proxy: bind SOCKS", source))?;
-        let socks_addr = socks_listener
-            .local_addr()
-            .map_err(|source| Error::with_source("proxy: SOCKS address", source))?;
+        .map_err(Error::Io)?;
+        let socks_addr = socks_listener.local_addr().map_err(Error::Io)?;
 
         Some(NetworkProxies {
             domain_policy: policy.network_access.domain_policy.clone(),
@@ -94,9 +95,7 @@ fn run() -> Result<()> {
         notify_connect: false,
         unix_sockets: unix_socket_filter(&policy.network_access.unix_socket_access),
     })?;
-    filter
-        .load()
-        .map_err(|source| Error::with_source("seccomp: load", source))?;
+    filter.load().map_err(Error::Seccomp)?;
     exec_command(&cli.command, &cli.command_args)
 }
 
@@ -124,8 +123,8 @@ fn unix_socket_filter(access: &UnixSocketAccess) -> seccomp::UnixSocketFilter {
 
 fn exec_command(command: &OsStr, args: &[OsString]) -> Result<()> {
     let error = Command::new(command).args(args).exec();
-    Err(Error::with_source(
-        format!("exec: {}", command.to_string_lossy()),
-        error,
-    ))
+    Err(Error::Exec {
+        command: command.to_os_string(),
+        source: error,
+    })
 }

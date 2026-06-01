@@ -19,7 +19,7 @@ use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, fork};
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{self, IoSlice, IoSliceMut};
+use std::io::{IoSlice, IoSliceMut};
 use std::mem;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
@@ -35,7 +35,7 @@ const NOTIFY_API: u32 = 6;
 const POLL_MS: u16 = 100;
 const SOCK_TYPE_MASK: u64 = 0x0f;
 
-type SysResult<T> = std::result::Result<T, i32>;
+type SysResult<T> = std::result::Result<T, Error>;
 type SocketAddrCall =
     unsafe extern "C" fn(libc::c_int, *const libc::sockaddr, libc::socklen_t) -> libc::c_int;
 
@@ -47,15 +47,14 @@ pub(crate) fn run_network_broker(
     proxies: Option<NetworkProxies>,
 ) -> Result<i32> {
     let api_level = seccomp_api_level();
-    let version =
-        ScmpVersion::current().map_err(|source| Error::with_source("seccomp: version", source))?;
+    let version = ScmpVersion::current()?;
 
     if api_level < NOTIFY_API {
-        return Err(Error::message(format!(
-            "seccomp: user notification requires libseccomp API level \
-             {NOTIFY_API} or newer; current level is {api_level} \
-             with libseccomp {version}"
-        )));
+        return Err(Error::NotSupportedNotifyApi {
+            required: NOTIFY_API,
+            current: api_level,
+            version: version.to_string(),
+        });
     }
 
     let notify_unix_sockets = needs_unix_socket_broker(&policy.network_access.unix_socket_access);
@@ -68,11 +67,10 @@ pub(crate) fn run_network_broker(
         unix_sockets,
     })?;
     let syscalls = NotificationSyscalls::new()?;
-    let (parent, child_sock) =
-        UnixStream::pair().map_err(|source| Error::with_source("seccomp: socketpair", source))?;
+    let (parent, child_sock) = UnixStream::pair()?;
 
     // SAFETY: landstrip forks before spawning threads; the child either execs the target or exits.
-    match unsafe { fork() }.map_err(|source| Error::with_source("seccomp: fork", source))? {
+    match unsafe { fork() }? {
         ForkResult::Child => {
             drop(parent);
 
@@ -84,22 +82,16 @@ pub(crate) fn run_network_broker(
                     notify_connect,
                     unix_sockets,
                 })?;
-                filter
-                    .load()
-                    .map_err(|source| Error::with_source("seccomp: load", source))?;
-                let notify = filter
-                    .get_notify_fd()
-                    .map_err(|source| Error::with_source("seccomp: notify fd", source))?;
+                filter.load()?;
+                let notify = filter.get_notify_fd()?;
 
                 // SAFETY: notify is borrowed only for the duration of fcntl(2).
                 let notify_fd = unsafe { BorrowedFd::borrow_raw(notify) };
-                let notify = fcntl(notify_fd, FcntlArg::F_DUPFD_CLOEXEC(0))
-                    .map_err(|source| Error::with_source("seccomp: duplicate notify fd", source))?;
+                let notify = fcntl(notify_fd, FcntlArg::F_DUPFD_CLOEXEC(0))?;
                 // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
                 let notify = unsafe { OwnedFd::from_raw_fd(notify) };
 
-                send_fd(&child_sock, notify.as_raw_fd())
-                    .map_err(|source| Error::with_source("seccomp: send notify fd", source))?;
+                send_fd(&child_sock, notify.as_raw_fd())?;
                 drop(child_sock);
 
                 let mut child_command = Command::new(command);
@@ -116,10 +108,10 @@ pub(crate) fn run_network_broker(
                 }
 
                 let error = child_command.exec();
-                Err(Error::with_source(
-                    format!("exec: {}", command.to_string_lossy()),
-                    error,
-                ))
+                Err(Error::Exec {
+                    command: command.to_os_string(),
+                    source: error,
+                })
             })();
 
             if let Err(error) = result {
@@ -131,8 +123,7 @@ pub(crate) fn run_network_broker(
         }
         ForkResult::Parent { child } => {
             drop(child_sock);
-            let notify = recv_fd(&parent)
-                .map_err(|source| Error::with_source("seccomp: receive notify fd", source))?;
+            let notify = recv_fd(&parent)?;
             drop(parent);
             let notify_fd = notify.as_raw_fd();
             if let Some(proxies) = proxies {
@@ -168,7 +159,7 @@ fn supervise_child(
                 Ok(WaitStatus::StillAlive) => break,
                 Ok(status) => return Ok(ExitCode::from(status).into()),
                 Err(Errno::EINTR) => continue,
-                Err(source) => return Err(Error::with_source("seccomp: wait", source)),
+                Err(source) => return Err(Error::Nix(source)),
             }
         }
 
@@ -180,7 +171,7 @@ fn supervise_child(
                 Ok(0) => break PollFlags::empty(),
                 Ok(_) => break poll_fd[0].revents().unwrap_or_else(PollFlags::empty),
                 Err(Errno::EINTR) => continue,
-                Err(source) => return Err(Error::with_source("seccomp: poll", source)),
+                Err(source) => return Err(Error::Nix(source)),
             }
         };
 
@@ -193,28 +184,26 @@ fn supervise_child(
                 match waitpid(child, None) {
                     Ok(status) => return Ok(ExitCode::from(status).into()),
                     Err(Errno::EINTR) => continue,
-                    Err(source) => return Err(Error::with_source("seccomp: wait", source)),
+                    Err(source) => return Err(Error::Nix(source)),
                 }
             }
         }
 
-        let request = ScmpNotifReq::receive(notify_fd)
-            .map_err(|source| Error::with_source("seccomp: receive notification", source))?;
+        let request = ScmpNotifReq::receive(notify_fd)?;
         let response = handle_notification(policy, &request, syscalls);
 
-        notify_id_valid(notify_fd, request.id)
-            .map_err(|source| Error::with_source("seccomp: stale notification", source))?;
+        notify_id_valid(notify_fd, request.id)?;
         if let Err(source) = response.respond(notify_fd) {
             loop {
                 match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
                     Ok(WaitStatus::StillAlive) => break,
                     Ok(status) => return Ok(ExitCode::from(status).into()),
                     Err(Errno::EINTR) => continue,
-                    Err(wait_error) => return Err(Error::with_source("seccomp: wait", wait_error)),
+                    Err(wait_error) => return Err(Error::Nix(wait_error)),
                 }
             }
 
-            return Err(Error::with_source("seccomp: respond", source));
+            return Err(Error::Seccomp(source));
         }
     }
 }
@@ -239,33 +228,49 @@ fn handle_notification(
         Ok(NotificationResult::Continue) => {
             ScmpNotifResp::new_continue(request.id, ScmpNotifRespFlags::empty())
         }
-        Err(errno) => {
+        Err(error) => {
+            let errno = notification_errno(&error);
             ScmpNotifResp::new_error(request.id, -errno.abs(), ScmpNotifRespFlags::empty())
         }
     }
 }
 
+fn notification_errno(error: &Error) -> i32 {
+    match error {
+        Error::PolicyDenied => libc::EACCES,
+        Error::AddressFamilyNotSupported => libc::EAFNOSUPPORT,
+        Error::InvalidAddress => libc::EINVAL,
+        Error::BadFileDescriptor => libc::EBADF,
+        Error::BadAddress => libc::EFAULT,
+        Error::NameTooLong => libc::ENAMETOOLONG,
+        Error::Nix(errno) => *errno as i32,
+        Error::PeerClosed => libc::ECONNRESET,
+        Error::MissingFileDescriptor => libc::EBADMSG,
+        _ => libc::EIO,
+    }
+}
+
 fn handle_bind(policy: &AccessPolicy, request: &ScmpNotifReq) -> SysResult<NotificationResult> {
-    let mut socket = remote_socket(request)?;
+    let mut socket = target_socket(request)?;
 
     match socket.kind() {
         SocketKind::Tcp => {
             let endpoint = tcp_endpoint(&socket.addr, socket.info.domain)?;
             if !endpoint.loopback {
-                return Err(libc::EACCES);
+                return Err(Error::PolicyDenied);
             }
 
             broker_addr_call(socket.sock.as_raw_fd(), &socket.addr, libc::bind)
                 .map(NotificationResult::Value)
         }
         SocketKind::Unix => handle_unix_bind(policy, request.pid, &mut socket),
-        SocketKind::Unsupported => Err(libc::EAFNOSUPPORT),
+        SocketKind::NotSupported => Err(Error::AddressFamilyNotSupported),
         SocketKind::Other => Ok(NotificationResult::Continue),
     }
 }
 
 fn handle_connect(policy: &AccessPolicy, request: &ScmpNotifReq) -> SysResult<NotificationResult> {
-    let socket = remote_socket(request)?;
+    let socket = target_socket(request)?;
 
     match socket.kind() {
         SocketKind::Tcp => {
@@ -276,17 +281,17 @@ fn handle_connect(policy: &AccessPolicy, request: &ScmpNotifReq) -> SysResult<No
         }
         SocketKind::Unix => handle_unix_connect(policy, request.pid, &socket),
         SocketKind::Other => Ok(NotificationResult::Continue),
-        SocketKind::Unsupported => Err(libc::EAFNOSUPPORT),
+        SocketKind::NotSupported => Err(Error::AddressFamilyNotSupported),
     }
 }
 
 fn handle_unix_connect(
     policy: &AccessPolicy,
     pid: u32,
-    socket: &RemoteSocket,
+    socket: &TargetSocket,
 ) -> SysResult<NotificationResult> {
     let Some((target, relative)) = unix_path_target(pid, &socket.addr)? else {
-        return Err(libc::EACCES);
+        return Err(Error::PolicyDenied);
     };
     authorize_unix_path(policy, &target)?;
 
@@ -301,10 +306,10 @@ fn handle_unix_connect(
 fn handle_unix_bind(
     policy: &AccessPolicy,
     pid: u32,
-    socket: &mut RemoteSocket,
+    socket: &mut TargetSocket,
 ) -> SysResult<NotificationResult> {
     let Some((target, relative)) = unix_path_target(pid, &socket.addr)? else {
-        return Err(libc::EACCES);
+        return Err(Error::PolicyDenied);
     };
     authorize_unix_path(policy, &target)?;
 
@@ -313,7 +318,7 @@ fn handle_unix_bind(
         .iter()
         .any(|root| target == *root || target.starts_with(root))
     {
-        return Err(libc::EACCES);
+        return Err(Error::PolicyDenied);
     }
 
     if relative {
@@ -343,9 +348,8 @@ fn unix_path_target(pid: u32, addr: &[u8]) -> SysResult<Option<(PathBuf, bool)>>
     if path.is_absolute() {
         Ok(Some((create_path(path), false)))
     } else {
-        let pid = i32::try_from(pid).map_err(|_| libc::EINVAL)?;
-        let cwd = fs::read_link(format!("/proc/{pid}/cwd"))
-            .map_err(|error| error.raw_os_error().unwrap_or(libc::EIO))?;
+        let pid = i32::try_from(pid).map_err(|_| Error::InvalidAddress)?;
+        let cwd = fs::read_link(format!("/proc/{pid}/cwd")).map_err(Error::Io)?;
         Ok(Some((create_path(&cwd.join(path)), true)))
     }
 }
@@ -357,7 +361,7 @@ fn authorize_unix_path(policy: &AccessPolicy, target: &Path) -> SysResult<()> {
             .iter()
             .any(|path| target == path || target.starts_with(path))
             .then_some(())
-            .ok_or(libc::EACCES),
+            .ok_or(Error::PolicyDenied),
     }
 }
 
@@ -366,7 +370,7 @@ fn rewrite_unix_path(addr: &mut Vec<u8>, target: &Path) -> SysResult<()> {
     let path = target.as_os_str().as_bytes();
     let max_path = mem::size_of::<libc::sockaddr_un>() - sun_path;
     if path.len() + 1 > max_path {
-        return Err(libc::ENAMETOOLONG);
+        return Err(Error::NameTooLong);
     }
 
     let mut rewritten = vec![0_u8; sun_path + path.len() + 1];
@@ -379,7 +383,7 @@ fn rewrite_unix_path(addr: &mut Vec<u8>, target: &Path) -> SysResult<()> {
 
 fn authorize_proxy_endpoint(ports: &[u16], endpoint: TcpEndpoint) -> SysResult<()> {
     if !endpoint.loopback || !ports.contains(&endpoint.port) {
-        return Err(libc::EACCES);
+        return Err(Error::PolicyDenied);
     }
 
     Ok(())
@@ -389,7 +393,7 @@ fn tcp_endpoint(addr: &[u8], domain: i32) -> SysResult<TcpEndpoint> {
     match (domain, sockaddr_family(addr)?) {
         (libc::AF_INET, libc::AF_INET) => {
             if addr.len() < mem::size_of::<libc::sockaddr_in>() {
-                return Err(libc::EINVAL);
+                return Err(Error::InvalidAddress);
             }
 
             let port = u16::from_be_bytes([addr[2], addr[3]]);
@@ -401,69 +405,71 @@ fn tcp_endpoint(addr: &[u8], domain: i32) -> SysResult<TcpEndpoint> {
         }
         (libc::AF_INET6, libc::AF_INET6) => {
             if addr.len() < mem::size_of::<libc::sockaddr_in6>() {
-                return Err(libc::EINVAL);
+                return Err(Error::InvalidAddress);
             }
 
             let port = u16::from_be_bytes([addr[2], addr[3]]);
-            let ip = Ipv6Addr::from(<[u8; 16]>::try_from(&addr[8..24]).map_err(|_| libc::EINVAL)?);
+            let ip = Ipv6Addr::from(
+                <[u8; 16]>::try_from(&addr[8..24]).map_err(|_| Error::InvalidAddress)?,
+            );
             Ok(TcpEndpoint {
                 port,
                 loopback: ip.is_loopback(),
             })
         }
-        _ => Err(libc::EAFNOSUPPORT),
+        _ => Err(Error::AddressFamilyNotSupported),
     }
 }
 
 fn sockaddr_family(addr: &[u8]) -> SysResult<i32> {
     let family = addr
         .get(..mem::size_of::<libc::sa_family_t>())
-        .ok_or(libc::EINVAL)?;
-    let family = <[u8; 2]>::try_from(family).map_err(|_| libc::EINVAL)?;
+        .ok_or(Error::InvalidAddress)?;
+    let family = <[u8; 2]>::try_from(family).map_err(|_| Error::InvalidAddress)?;
 
     Ok(i32::from(libc::sa_family_t::from_ne_bytes(family)))
 }
 
-fn remote_socket(request: &ScmpNotifReq) -> SysResult<RemoteSocket> {
-    let fd = RawFd::try_from(request.data.args[0]).map_err(|_| libc::EBADF)?;
-    let remote_addr = usize::try_from(request.data.args[1]).map_err(|_| libc::EFAULT)?;
-    let addr_len = usize::try_from(request.data.args[2]).map_err(|_| libc::EINVAL)?;
-    let pid = Pid::from_raw(i32::try_from(request.pid).map_err(|_| libc::EINVAL)?);
+fn target_socket(request: &ScmpNotifReq) -> SysResult<TargetSocket> {
+    let fd = RawFd::try_from(request.data.args[0]).map_err(|_| Error::BadFileDescriptor)?;
+    let target_addr = usize::try_from(request.data.args[1]).map_err(|_| Error::BadAddress)?;
+    let addr_len = usize::try_from(request.data.args[2]).map_err(|_| Error::InvalidAddress)?;
+    let pid = Pid::from_raw(i32::try_from(request.pid).map_err(|_| Error::InvalidAddress)?);
 
     if addr_len > mem::size_of::<libc::sockaddr_storage>() {
-        return Err(libc::EINVAL);
+        return Err(Error::InvalidAddress);
     }
 
-    let addr = read_remote_addr(pid, remote_addr, addr_len)?;
-    let sock = duplicate_remote_fd(pid, fd)?;
+    let addr = read_target_addr(pid, target_addr, addr_len)?;
+    let sock = duplicate_target_fd(pid, fd)?;
     let info = SocketInfo::read(sock.as_raw_fd())?;
 
-    Ok(RemoteSocket { sock, addr, info })
+    Ok(TargetSocket { sock, addr, info })
 }
 
-fn read_remote_addr(pid: Pid, remote_addr: usize, addr_len: usize) -> SysResult<Vec<u8>> {
+fn read_target_addr(pid: Pid, target_addr: usize, addr_len: usize) -> SysResult<Vec<u8>> {
     if addr_len < mem::size_of::<libc::sa_family_t>() {
-        return Err(libc::EINVAL);
+        return Err(Error::InvalidAddress);
     }
 
     let mut addr = vec![0_u8; addr_len];
     let mut local = [IoSliceMut::new(&mut addr)];
-    let remote = [RemoteIoVec {
-        base: remote_addr,
+    let target = [RemoteIoVec {
+        base: target_addr,
         len: addr_len,
     }];
-    if process_vm_readv(pid, &mut local, &remote).map_err(|error| error as i32)? != addr_len {
-        return Err(libc::EFAULT);
+    if process_vm_readv(pid, &mut local, &target).map_err(Error::Nix)? != addr_len {
+        return Err(Error::BadAddress);
     }
 
     Ok(addr)
 }
 
-fn duplicate_remote_fd(pid: Pid, fd: RawFd) -> SysResult<OwnedFd> {
+fn duplicate_target_fd(pid: Pid, fd: RawFd) -> SysResult<OwnedFd> {
     // SAFETY: pidfd_open copies scalar arguments and returns a new fd on success.
     let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), 0) };
     if pidfd < 0 {
-        return Err(Errno::last_raw());
+        return Err(Error::Nix(Errno::last()));
     }
     // SAFETY: pidfd_open returned a new owned descriptor.
     let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd as RawFd) };
@@ -471,7 +477,7 @@ fn duplicate_remote_fd(pid: Pid, fd: RawFd) -> SysResult<OwnedFd> {
     // SAFETY: pidfd_getfd copies scalar arguments and returns a duplicated fd.
     let sock = unsafe { libc::syscall(libc::SYS_pidfd_getfd, pidfd.as_raw_fd(), fd, 0) };
     if sock < 0 {
-        return Err(Errno::last_raw());
+        return Err(Error::Nix(Errno::last()));
     }
 
     // SAFETY: pidfd_getfd returned a new owned descriptor.
@@ -489,7 +495,7 @@ fn broker_addr_call(sock: RawFd, addr: &[u8], call: SocketAddrCall) -> SysResult
             addr.len(),
         );
     }
-    let addr_len = libc::socklen_t::try_from(addr.len()).map_err(|_| libc::EINVAL)?;
+    let addr_len = libc::socklen_t::try_from(addr.len()).map_err(|_| Error::InvalidAddress)?;
 
     // SAFETY: storage contains copied target sockaddr bytes and is aligned.
     let rc = unsafe {
@@ -500,7 +506,7 @@ fn broker_addr_call(sock: RawFd, addr: &[u8], call: SocketAddrCall) -> SysResult
         )
     };
     if rc < 0 {
-        Err(Errno::last_raw())
+        Err(Error::Nix(Errno::last()))
     } else {
         Ok(i64::from(rc))
     }
@@ -508,8 +514,7 @@ fn broker_addr_call(sock: RawFd, addr: &[u8], call: SocketAddrCall) -> SysResult
 
 pub(crate) fn network_filter(config: NetworkFilter) -> Result<ScmpFilterContext> {
     let syscalls = NotificationSyscalls::new()?;
-    let mut filter = ScmpFilterContext::new(ScmpAction::Allow)
-        .map_err(|source| Error::with_source("seccomp: filter", source))?;
+    let mut filter = ScmpFilterContext::new(ScmpAction::Allow).map_err(Error::Seccomp)?;
 
     add_socket_family_filter(&mut filter, syscalls.socket)?;
     add_unix_socket_filters(
@@ -522,13 +527,13 @@ pub(crate) fn network_filter(config: NetworkFilter) -> Result<ScmpFilterContext>
     if config.notify_bind {
         filter
             .add_rule(ScmpAction::Notify, syscalls.bind)
-            .map_err(|source| Error::with_source("seccomp: rule bind", source))?;
+            .map_err(Error::Seccomp)?;
     }
 
     if config.notify_connect {
         filter
             .add_rule(ScmpAction::Notify, syscalls.connect)
-            .map_err(|source| Error::with_source("seccomp: rule connect", source))?;
+            .map_err(Error::Seccomp)?;
     }
 
     Ok(filter)
@@ -598,8 +603,7 @@ fn add_socket_domain_filter(
     socket: ScmpSyscall,
     domain: i32,
 ) -> Result<()> {
-    let domain = u64::try_from(domain)
-        .map_err(|source| Error::with_source("seccomp: socket domain", source))?;
+    let domain = u64::try_from(domain).map_err(|_| Error::InvalidAddress)?;
 
     filter
         .add_rule_conditional(
@@ -608,7 +612,7 @@ fn add_socket_domain_filter(
             &[ScmpArgCompare::new(0, ScmpCompareOp::Equal, domain)],
         )
         .map(|_| ())
-        .map_err(|source| Error::with_source("seccomp: rule socket domain", source))
+        .map_err(Error::Seccomp)
 }
 
 fn add_socket_type_filter(
@@ -617,10 +621,8 @@ fn add_socket_type_filter(
     domain: i32,
     ty: i32,
 ) -> Result<()> {
-    let domain = u64::try_from(domain)
-        .map_err(|source| Error::with_source("seccomp: socket domain", source))?;
-    let ty =
-        u64::try_from(ty).map_err(|source| Error::with_source("seccomp: socket type", source))?;
+    let domain = u64::try_from(domain).map_err(|_| Error::InvalidAddress)?;
+    let ty = u64::try_from(ty).map_err(|_| Error::InvalidAddress)?;
 
     filter
         .add_rule_conditional(
@@ -632,7 +634,7 @@ fn add_socket_type_filter(
             ],
         )
         .map(|_| ())
-        .map_err(|source| Error::with_source("seccomp: rule socket type", source))
+        .map_err(Error::Seccomp)
 }
 
 fn create_path(path: &Path) -> PathBuf {
@@ -648,7 +650,8 @@ fn create_path(path: &Path) -> PathBuf {
 
 fn sockopt(fd: RawFd, level: libc::c_int, name: libc::c_int) -> SysResult<i32> {
     let mut value = 0;
-    let mut len = libc::socklen_t::try_from(mem::size_of_val(&value)).map_err(|_| libc::EINVAL)?;
+    let mut len =
+        libc::socklen_t::try_from(mem::size_of_val(&value)).map_err(|_| Error::InvalidAddress)?;
 
     // SAFETY: value and len point to initialized storage for getsockopt(2) to update.
     let rc = unsafe {
@@ -661,13 +664,13 @@ fn sockopt(fd: RawFd, level: libc::c_int, name: libc::c_int) -> SysResult<i32> {
         )
     };
     if rc < 0 {
-        Err(Errno::last_raw())
+        Err(Error::Nix(Errno::last()))
     } else {
         Ok(value)
     }
 }
 
-fn send_fd(socket: &UnixStream, fd: RawFd) -> io::Result<()> {
+fn send_fd(socket: &UnixStream, fd: RawFd) -> Result<()> {
     let byte = [0_u8];
     let iov = [IoSlice::new(&byte)];
     let fds = [fd];
@@ -680,10 +683,10 @@ fn send_fd(socket: &UnixStream, fd: RawFd) -> io::Result<()> {
         None,
     )
     .map(|_| ())
-    .map_err(|error| io::Error::from_raw_os_error(error as i32))
+    .map_err(Error::Nix)
 }
 
-fn recv_fd(socket: &UnixStream) -> io::Result<OwnedFd> {
+fn recv_fd(socket: &UnixStream) -> Result<OwnedFd> {
     let mut byte = [0_u8];
     let mut iov = [IoSliceMut::new(&mut byte)];
     let mut control = nix::cmsg_space!([RawFd; 1]);
@@ -693,16 +696,13 @@ fn recv_fd(socket: &UnixStream) -> io::Result<OwnedFd> {
         Some(&mut control),
         MsgFlags::empty(),
     )
-    .map_err(|error| io::Error::from_raw_os_error(error as i32))?;
+    .map_err(Error::Nix)?;
 
     if message.bytes == 0 {
-        return Err(io::Error::from_raw_os_error(libc::ECONNRESET));
+        return Err(Error::PeerClosed);
     }
 
-    for control in message
-        .cmsgs()
-        .map_err(|error| io::Error::from_raw_os_error(error as i32))?
-    {
+    for control in message.cmsgs().map_err(Error::Nix)? {
         if let ControlMessageOwned::ScmRights(fds) = control {
             let Some(fd) = fds.first().copied() else {
                 continue;
@@ -712,17 +712,17 @@ fn recv_fd(socket: &UnixStream) -> io::Result<OwnedFd> {
         }
     }
 
-    Err(io::Error::from_raw_os_error(libc::EBADMSG))
+    Err(Error::MissingFileDescriptor)
 }
 
 #[derive(Debug)]
-struct RemoteSocket {
+struct TargetSocket {
     sock: OwnedFd,
     addr: Vec<u8>,
     info: SocketInfo,
 }
 
-impl RemoteSocket {
+impl TargetSocket {
     fn kind(&self) -> SocketKind {
         self.info.kind()
     }
@@ -755,7 +755,7 @@ impl SocketInfo {
         } else if matches!(self.domain, libc::AF_INET | libc::AF_INET6)
             || matches!(self.domain, libc::AF_PACKET | libc::AF_NETLINK)
         {
-            SocketKind::Unsupported
+            SocketKind::NotSupported
         } else {
             SocketKind::Other
         }
@@ -766,7 +766,7 @@ impl SocketInfo {
 enum SocketKind {
     Tcp,
     Unix,
-    Unsupported,
+    NotSupported,
     Other,
 }
 
@@ -791,14 +791,10 @@ struct NotificationSyscalls {
 impl NotificationSyscalls {
     fn new() -> Result<Self> {
         Ok(Self {
-            bind: ScmpSyscall::from_name("bind")
-                .map_err(|source| Error::with_source("seccomp: syscall bind", source))?,
-            connect: ScmpSyscall::from_name("connect")
-                .map_err(|source| Error::with_source("seccomp: syscall connect", source))?,
-            socket: ScmpSyscall::from_name("socket")
-                .map_err(|source| Error::with_source("seccomp: syscall socket", source))?,
-            socketpair: ScmpSyscall::from_name("socketpair")
-                .map_err(|source| Error::with_source("seccomp: syscall socketpair", source))?,
+            bind: ScmpSyscall::from_name("bind").map_err(Error::Seccomp)?,
+            connect: ScmpSyscall::from_name("connect").map_err(Error::Seccomp)?,
+            socket: ScmpSyscall::from_name("socket").map_err(Error::Seccomp)?,
+            socketpair: ScmpSyscall::from_name("socketpair").map_err(Error::Seccomp)?,
         })
     }
 }

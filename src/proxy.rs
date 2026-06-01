@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
+use crate::error::{Error, Result};
 use crate::policy::DomainPolicy;
 use http::header::{CONNECTION, CONTENT_LENGTH, HOST};
 use http::{Method, Request, Response, StatusCode, Uri, Version};
@@ -35,7 +36,7 @@ pub(crate) fn accept_proxy(
     for client in listener.incoming().flatten() {
         let domain_policy = domain_policy.clone();
         thread::spawn(move || {
-            let _ = (|| -> io::Result<()> {
+            let _ = (|| -> Result<()> {
                 match protocol {
                     ProxyProtocol::Http => {
                         let mut client = client;
@@ -44,19 +45,19 @@ pub(crate) fn accept_proxy(
                         let request: Request<Vec<u8>> = loop {
                             let count = client.read(&mut chunk)?;
                             if count == 0 {
-                                return Err(invalid_data("incomplete HTTP request"));
+                                return Err(Error::ProxyIncompleteHttpRequest);
                             }
                             buffer.extend_from_slice(&chunk[..count]);
 
                             if buffer.len() > MAX_HTTP_HEADER {
-                                return Err(invalid_data("HTTP header too large"));
+                                return Err(Error::ProxyHttpHeaderTooLarge);
                             }
 
                             let mut headers = [httparse::EMPTY_HEADER; MAX_HTTP_HEADERS];
                             let mut parsed = httparse::Request::new(&mut headers);
                             let header_len = match parsed
                                 .parse(&buffer)
-                                .map_err(|error| invalid_data(error.to_string()))?
+                                .map_err(|_| Error::ProxyInvalidHttpRequest)?
                             {
                                 httparse::Status::Complete(header_len) => header_len,
                                 httparse::Status::Partial => continue,
@@ -64,29 +65,27 @@ pub(crate) fn accept_proxy(
 
                             let method = parsed
                                 .method
-                                .ok_or_else(|| invalid_data("missing HTTP method"))?
+                                .ok_or(Error::ProxyMissingHttpMethod)?
                                 .parse::<Method>()
-                                .map_err(|error| invalid_data(error.to_string()))?;
+                                .map_err(|_| Error::ProxyInvalidHttpMethod)?;
                             let uri = parsed
                                 .path
-                                .ok_or_else(|| invalid_data("missing HTTP target"))?
+                                .ok_or(Error::ProxyMissingHttpTarget)?
                                 .parse::<Uri>()
-                                .map_err(|error| invalid_data(error.to_string()))?;
-                            let version = match parsed
-                                .version
-                                .ok_or_else(|| invalid_data("missing HTTP version"))?
-                            {
-                                0 => Version::HTTP_10,
-                                1 => Version::HTTP_11,
-                                2 => Version::HTTP_2,
-                                _ => return Err(invalid_data("unsupported HTTP version")),
-                            };
+                                .map_err(|_| Error::ProxyInvalidHttpTarget)?;
+                            let version =
+                                match parsed.version.ok_or(Error::ProxyMissingHttpVersion)? {
+                                    0 => Version::HTTP_10,
+                                    1 => Version::HTTP_11,
+                                    2 => Version::HTTP_2,
+                                    _ => return Err(Error::ProxyNotSupportedHttpVersion),
+                                };
 
                             let mut builder =
                                 Request::builder().method(method).uri(uri).version(version);
                             let request_headers = builder
                                 .headers_mut()
-                                .ok_or_else(|| invalid_data("invalid HTTP request"))?;
+                                .ok_or(Error::ProxyInvalidHttpRequest)?;
                             for header in parsed
                                 .headers
                                 .iter()
@@ -95,16 +94,16 @@ pub(crate) fn accept_proxy(
                                 let name = header
                                     .name
                                     .parse::<http::HeaderName>()
-                                    .map_err(|error| invalid_data(error.to_string()))?;
+                                    .map_err(|_| Error::ProxyInvalidHttpHeaderName)?;
                                 let value = http::HeaderValue::from_bytes(header.value)
-                                    .map_err(|error| invalid_data(error.to_string()))?;
+                                    .map_err(|_| Error::ProxyInvalidHttpHeaderValue)?;
                                 request_headers.append(name, value);
                             }
 
                             let body = buffer[header_len..].to_vec();
                             break builder
                                 .body(body)
-                                .map_err(|error| invalid_data(error.to_string()))?;
+                                .map_err(|_| Error::ProxyInvalidHttpRequest)?;
                         };
 
                         let target = if *request.method() == Method::CONNECT {
@@ -112,13 +111,13 @@ pub(crate) fn accept_proxy(
                             HttpTarget::Connect { host, port }
                         } else if let Some(scheme) = request.uri().scheme_str() {
                             if scheme != "http" {
-                                return Err(invalid_data("unsupported proxy URL scheme"));
+                                return Err(Error::ProxyNotSupportedProxyUrlScheme);
                             }
 
                             let host = request
                                 .uri()
                                 .host()
-                                .ok_or_else(|| invalid_data("missing proxy URL host"))?
+                                .ok_or(Error::ProxyMissingProxyUrlHost)?
                                 .to_owned();
                             let port = request.uri().port_u16().unwrap_or(80);
                             let uri = request
@@ -126,16 +125,16 @@ pub(crate) fn accept_proxy(
                                 .path_and_query()
                                 .map_or("/", http::uri::PathAndQuery::as_str)
                                 .parse::<Uri>()
-                                .map_err(|error| invalid_data(error.to_string()))?;
+                                .map_err(|_| Error::ProxyInvalidProxyUrlPath)?;
 
                             HttpTarget::Forward { host, port, uri }
                         } else {
                             let host = request
                                 .headers()
                                 .get(HOST)
-                                .ok_or_else(|| invalid_data("missing Host header"))?
+                                .ok_or(Error::ProxyMissingAuthorityHeader)?
                                 .to_str()
-                                .map_err(|_| invalid_data("invalid Host header"))?;
+                                .map_err(|_| Error::ProxyInvalidAuthorityHeader)?;
                             let (host, port) = parse_authority(host, 80)?;
                             HttpTarget::Forward {
                                 host,
@@ -162,7 +161,8 @@ pub(crate) fn accept_proxy(
                                     StatusCode::OK,
                                     "Connection Established",
                                 )?;
-                                relay(client, upstream)
+                                relay(client, upstream)?;
+                                Ok(())
                             }
                             HttpTarget::Forward { uri, .. } => {
                                 let version = match request.version() {
@@ -185,7 +185,8 @@ pub(crate) fn accept_proxy(
                                 let mut upstream = upstream;
                                 upstream.write_all(&forwarded)?;
                                 upstream.write_all(request.body())?;
-                                relay(client, upstream)
+                                relay(client, upstream)?;
+                                Ok(())
                             }
                         }
                     }
@@ -194,7 +195,7 @@ pub(crate) fn accept_proxy(
                         let mut header = [0_u8; 2];
                         client.read_exact(&mut header)?;
                         if header[0] != 5 {
-                            return Err(invalid_data("unsupported SOCKS version"));
+                            return Err(Error::ProxyNotSupportedSocksVersion);
                         }
 
                         let mut methods = vec![0_u8; usize::from(header[1])];
@@ -208,7 +209,7 @@ pub(crate) fn accept_proxy(
                         let mut request = [0_u8; 4];
                         client.read_exact(&mut request)?;
                         if request[0] != 5 {
-                            return Err(invalid_data("unsupported SOCKS request version"));
+                            return Err(Error::ProxyNotSupportedSocksRequestVersion);
                         }
                         if request[1] != 1 {
                             write_socks_reply(&mut client, 7)?;
@@ -222,7 +223,7 @@ pub(crate) fn accept_proxy(
                                 let mut host = vec![0_u8; usize::from(len[0])];
                                 client.read_exact(&mut host)?;
                                 let host = String::from_utf8(host)
-                                    .map_err(|_| invalid_data("invalid SOCKS domain"))?;
+                                    .map_err(|_| Error::ProxyInvalidSocksDomain)?;
                                 let mut port = [0_u8; 2];
                                 client.read_exact(&mut port)?;
 
@@ -255,7 +256,8 @@ pub(crate) fn accept_proxy(
                         };
 
                         write_socks_reply(&mut client, 0)?;
-                        relay(client, upstream)
+                        relay(client, upstream)?;
+                        Ok(())
                     }
                 }
             })();
@@ -263,13 +265,13 @@ pub(crate) fn accept_proxy(
     }
 }
 
-fn write_http_response(stream: &mut TcpStream, status: StatusCode, reason: &str) -> io::Result<()> {
+fn write_http_response(stream: &mut TcpStream, status: StatusCode, reason: &str) -> Result<()> {
     let response = Response::builder()
         .status(status)
         .header(CONTENT_LENGTH, "0")
         .header(CONNECTION, "close")
         .body(())
-        .map_err(|error| invalid_data(error.to_string()))?;
+        .map_err(|_| Error::ProxyInvalidHttpResponse)?;
 
     write!(stream, "HTTP/1.1 {} {reason}\r\n", response.status())?;
     for (name, value) in response.headers() {
@@ -278,7 +280,8 @@ fn write_http_response(stream: &mut TcpStream, status: StatusCode, reason: &str)
         stream.write_all(value.as_bytes())?;
         stream.write_all(b"\r\n")?;
     }
-    stream.write_all(b"\r\n")
+    stream.write_all(b"\r\n")?;
+    Ok(())
 }
 
 enum HttpTarget {
@@ -286,16 +289,16 @@ enum HttpTarget {
     Forward { host: String, port: u16, uri: Uri },
 }
 
-fn parse_authority(authority: &str, default_port: u16) -> io::Result<(String, u16)> {
-    let url = Url::parse(&format!("http://{authority}/"))
-        .map_err(|_| invalid_data("invalid authority"))?;
+fn parse_authority(authority: &str, default_port: u16) -> Result<(String, u16)> {
+    let url =
+        Url::parse(&format!("http://{authority}/")).map_err(|_| Error::ProxyInvalidAuthority)?;
     if !url.username().is_empty() || url.password().is_some() {
-        return Err(invalid_data("authority must not include userinfo"));
+        return Err(Error::ProxyAuthorityHasUserinfo);
     }
 
     let host = url
         .host_str()
-        .ok_or_else(|| invalid_data("authority missing host"))?
+        .ok_or(Error::ProxyAuthorityMissingHost)?
         .to_owned();
     Ok((host, url.port().unwrap_or(default_port)))
 }
@@ -329,8 +332,4 @@ fn relay(client: TcpStream, upstream: TcpStream) -> io::Result<()> {
     let _ = to_upstream.join();
     let _ = to_client.join();
     Ok(())
-}
-
-fn invalid_data(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::paths::normalize_roots;
 use std::fs;
 use std::io;
@@ -46,12 +46,7 @@ fn scan_allowed_root(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Ok(vec![root.to_path_buf()]);
         }
-        Err(source) => {
-            return Err(Error::with_source(
-                format!("traversal: {}", root.display()),
-                source,
-            ));
-        }
+        Err(source) => return Err(source.into()),
     };
     let file_type = metadata.file_type();
     if file_type.is_symlink() && !is_explicit_root {
@@ -65,13 +60,10 @@ fn scan_allowed_root(
     }
 
     let mut roots = Vec::new();
-    let entries = fs::read_dir(root)
-        .map_err(|source| Error::with_source(format!("traversal: {}", root.display()), source))?;
+    let entries = fs::read_dir(root)?;
 
     for entry in entries {
-        let entry = entry.map_err(|source| {
-            Error::with_source(format!("traversal: {}", root.display()), source)
-        })?;
+        let entry = entry?;
         let child = entry.path();
         roots.extend(scan_allowed_root(&child, denied, false)?);
     }

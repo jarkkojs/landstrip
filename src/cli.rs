@@ -86,11 +86,10 @@ fn parse_cli_action(
     }
 
     if command_tail.is_empty() {
-        return Err(Error::usage(command_required_usage(&program_name)));
+        return Err(Error::Usage(command_required_usage(&program_name)));
     }
 
-    let policy_base =
-        env::current_dir().map_err(|source| Error::with_source("current directory", source))?;
+    let policy_base = env::current_dir()?;
 
     cli_from_options(options, policy_base, command_tail).map(CliAction::Run)
 }
@@ -135,7 +134,7 @@ fn cli_from_options(
     let mut command_tail = command_tail.into_iter();
     let command = command_tail
         .next()
-        .ok_or_else(|| Error::usage(command_required_usage(PROGRAM_NAME)))?;
+        .ok_or_else(|| Error::Usage(command_required_usage(PROGRAM_NAME)))?;
 
     Ok(Cli {
         policy_paths: options.policy,
@@ -163,7 +162,8 @@ fn parse_cli_options(
     program_name: &str,
     args: impl IntoIterator<Item = OsString>,
 ) -> Result<ParsedOptions> {
-    let arg_strings = option_args_to_strings(args)?;
+    let arg_strings =
+        option_args_to_strings(args).map_err(|_| Error::Usage("argument encoding".to_owned()))?;
     let arg_refs = arg_strings.iter().map(String::as_str).collect::<Vec<_>>();
 
     match CliOptions::from_args(&[program_name], &arg_refs) {
@@ -172,14 +172,14 @@ fn parse_cli_options(
     }
 }
 
-fn option_args_to_strings(args: impl IntoIterator<Item = OsString>) -> Result<Vec<String>> {
+fn option_args_to_strings(
+    args: impl IntoIterator<Item = OsString>,
+) -> std::result::Result<Vec<String>, OsString> {
     let args = args.into_iter();
     let mut strings = Vec::with_capacity(args.size_hint().0);
 
     for arg in args {
-        let string = arg.into_string().map_err(|arg| {
-            Error::message(format!("argument encoding: {}", arg.to_string_lossy()))
-        })?;
+        let string = arg.into_string()?;
 
         strings.push(string);
     }
@@ -198,7 +198,7 @@ fn handle_cli_options_early_exit(early_exit: &argh::EarlyExit) -> Result<ParsedO
         .next()
         .filter(|line| !line.is_empty())
         .unwrap_or("arguments invalid");
-    Err(Error::usage(message.to_owned()))
+    Err(Error::Usage(message.to_owned()))
 }
 
 fn command_required_usage(program_name: &str) -> String {

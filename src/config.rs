@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
-use crate::error::{Error, Result};
+use crate::error::{Error, PolicyPort, Result};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::env;
@@ -45,28 +45,29 @@ pub(crate) fn load_settings(policy_paths: &[PathBuf]) -> Result<Settings> {
 
     if policy_paths.is_empty() {
         let mut json = String::new();
-        io::stdin()
-            .read_to_string(&mut json)
-            .map_err(|source| Error::with_source("policy: stdin", source))?;
-        let value: Value = serde_json::from_str(&json)
-            .map_err(|source| Error::with_source("policy: stdin", source))?;
+        io::stdin().read_to_string(&mut json)?;
+        let value: Value = serde_json::from_str(&json)?;
         merge_json(&mut merged, value);
     } else {
         for path in policy_paths {
             log::debug!("policy: file {}", path.display());
 
-            let context = format!("policy: file {}", path.display());
-            let json = fs::read_to_string(path)
-                .map_err(|source| Error::with_source(context.clone(), source))?;
-            let value: Value = serde_json::from_str(&json)
-                .map_err(|source| Error::with_source(context, source))?;
+            let json = fs::read_to_string(path).map_err(|source| Error::PolicyFile {
+                path: path.clone(),
+                source,
+            })?;
+            let value: Value =
+                serde_json::from_str(&json).map_err(|source| Error::PolicyFileJson {
+                    path: path.clone(),
+                    source,
+                })?;
             merge_json(&mut merged, value);
         }
     }
 
     apply_proxy_env_defaults(&mut merged, |name| env::var(name).ok())?;
 
-    serde_json::from_value(merged).map_err(|source| Error::with_source("policy: decode", source))
+    serde_json::from_value(merged).map_err(Error::Json)
 }
 
 fn merge_json(base: &mut Value, overlay: Value) {
@@ -105,10 +106,10 @@ fn apply_proxy_env_defaults(
     }
 
     let http_proxy_port = env_var(HTTP_PROXY)
-        .map(|value| proxy_port(HTTP_PROXY, &value, 80))
+        .map(|value| proxy_port(PolicyPort::HttpProxyEnvironment, &value, 80))
         .transpose()?;
     let socks_proxy_port = env_var(SOCKS_PROXY)
-        .map(|value| proxy_port(SOCKS_PROXY, &value, 1080))
+        .map(|value| proxy_port(PolicyPort::SocksProxyEnvironment, &value, 1080))
         .transpose()?;
     if http_proxy_port.is_none() && socks_proxy_port.is_none() {
         return Ok(());
@@ -135,7 +136,7 @@ fn apply_proxy_env_defaults(
     Ok(())
 }
 
-fn proxy_port(name: &str, value: &str, default_port: u16) -> Result<Option<u16>> {
+fn proxy_port(port_name: PolicyPort, value: &str, default_port: u16) -> Result<Option<u16>> {
     let value = value.trim();
     if value.is_empty() {
         return Ok(None);
@@ -150,18 +151,16 @@ fn proxy_port(name: &str, value: &str, default_port: u16) -> Result<Option<u16>>
         return Ok(None);
     }
 
-    let port = authority_port(name, authority)?.unwrap_or(default_port);
+    let port = authority_port(port_name, authority)?.unwrap_or(default_port);
 
     if port == 0 {
-        return Err(Error::message(format!(
-            "policy: net {name} range 1..=65535",
-        )));
+        return Err(Error::PolicyPortOutOfRange(port_name));
     }
 
     Ok(Some(port))
 }
 
-fn authority_port(name: &str, authority: &str) -> Result<Option<u16>> {
+fn authority_port(port_name: PolicyPort, authority: &str) -> Result<Option<u16>> {
     if let Some(rest) = authority.strip_prefix('[') {
         let Some((_, rest)) = rest.split_once(']') else {
             return Ok(None);
@@ -170,21 +169,24 @@ fn authority_port(name: &str, authority: &str) -> Result<Option<u16>> {
             return Ok(None);
         };
 
-        return parse_port(name, port).map(Some);
+        return parse_port(port_name, port).map(Some);
     }
 
     let Some((_, port)) = authority.rsplit_once(':') else {
         return Ok(None);
     };
 
-    parse_port(name, port).map(Some)
+    parse_port(port_name, port).map(Some)
 }
 
-fn parse_port(name: &str, port: &str) -> Result<u16> {
+fn parse_port(port_name: PolicyPort, port: &str) -> Result<u16> {
     if port.is_empty() {
-        return Err(Error::message(format!("policy: net {name} port empty")));
+        return Err(Error::PolicyPortEmpty(port_name));
     }
 
     port.parse::<u16>()
-        .map_err(|source| Error::with_source(format!("policy: net {name} port"), source))
+        .map_err(|source| Error::PolicyPortParse {
+            port: port_name,
+            source,
+        })
 }

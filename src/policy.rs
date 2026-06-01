@@ -2,13 +2,11 @@
 // Copyright (c) 2026 Jarkko Sakkinen
 
 use crate::config::{SandboxFilesystem, SandboxNetwork};
-use crate::error::{Error, Result};
+use crate::error::{DomainList, Error, PolicyPort, Result};
 use crate::paths::{normalize_path, normalize_roots};
 use crate::traversal::subtract_denied_roots;
 use std::env;
-use std::fmt;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use url::Host;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -57,16 +55,14 @@ pub(crate) fn lower_sandbox_policy(
 
     let write_allow = resolve_paths(&filesystem.allow_write, &policy_base, home)?;
     let write_deny = resolve_paths(&filesystem.deny_write, &policy_base, home)?;
-    let write_roots = subtract_denied_roots(write_allow, &write_deny)
-        .map_err(|source| Error::with_source("policy: fs write", source))?;
+    let write_roots = subtract_denied_roots(write_allow, &write_deny)?;
 
     let read_allow = resolve_paths(&filesystem.allow_read, &policy_base, home)?;
     let read_deny = resolve_paths(&filesystem.deny_read, &policy_base, home)?;
     let read_access = if read_deny.is_empty() {
         ReadAccess::Unrestricted
     } else {
-        let mut read_roots = subtract_denied_roots(vec![PathBuf::from("/")], &read_deny)
-            .map_err(|source| Error::with_source("policy: fs read", source))?;
+        let mut read_roots = subtract_denied_roots(vec![PathBuf::from("/")], &read_deny)?;
         read_roots.extend(read_allow);
         normalize_roots(&mut read_roots);
         ReadAccess::AllowRoots(read_roots)
@@ -88,12 +84,12 @@ fn lower_network_policy(
     push_proxy_port(
         &mut connect_tcp_ports,
         network.http_proxy_port,
-        "httpProxyPort",
+        PolicyPort::HttpProxyPolicy,
     )?;
     push_proxy_port(
         &mut connect_tcp_ports,
         network.socks_proxy_port,
-        "socksProxyPort",
+        PolicyPort::SocksProxyPolicy,
     )?;
     connect_tcp_ports.sort_unstable();
     connect_tcp_ports.dedup();
@@ -121,8 +117,8 @@ impl TryFrom<&SandboxNetwork> for DomainPolicy {
 
     fn try_from(network: &SandboxNetwork) -> Result<Self> {
         Ok(Self {
-            allowed: parse_domains("allowedDomains", &network.allowed_domains)?,
-            denied: parse_domains("deniedDomains", &network.denied_domains)?,
+            allowed: parse_domains(DomainList::Allowed, &network.allowed_domains)?,
+            denied: parse_domains(DomainList::Denied, &network.denied_domains)?,
         })
     }
 }
@@ -130,7 +126,7 @@ impl TryFrom<&SandboxNetwork> for DomainPolicy {
 impl DomainPolicy {
     #[must_use]
     pub(crate) fn allows_host(&self, host: &str) -> bool {
-        let Ok(host) = host.parse::<DomainName>() else {
+        let Some(host) = DomainName::parse(host) else {
             return false;
         };
 
@@ -142,13 +138,11 @@ impl DomainPolicy {
     }
 }
 
-fn parse_domains(label: &str, values: &[String]) -> Result<Vec<DomainPattern>> {
+fn parse_domains(list: DomainList, values: &[String]) -> Result<Vec<DomainPattern>> {
     let mut patterns = Vec::with_capacity(values.len());
 
     for value in values {
-        let pattern = value
-            .parse::<DomainPattern>()
-            .map_err(|source| Error::message(format!("policy: net {label} {source}: {value}")))?;
+        let pattern = parse_domain_pattern(list, value)?;
         if !patterns.contains(&pattern) {
             patterns.push(pattern);
         }
@@ -157,31 +151,33 @@ fn parse_domains(label: &str, values: &[String]) -> Result<Vec<DomainPattern>> {
     Ok(patterns)
 }
 
+fn parse_domain_pattern(list: DomainList, value: &str) -> Result<DomainPattern> {
+    let domain = value.trim();
+    if domain.is_empty() {
+        return Err(Error::PolicyDomainEmpty {
+            list,
+            value: value.to_owned(),
+        });
+    }
+
+    if let Some(domain) = domain.strip_prefix("*.") {
+        return DomainName::parse_policy(list, value, domain).map(DomainPattern::Wildcard);
+    }
+
+    if domain.contains('*') {
+        return Err(Error::PolicyDomainInvalidWildcard {
+            list,
+            value: value.to_owned(),
+        });
+    }
+
+    DomainName::parse_policy(list, value, domain).map(DomainPattern::Exact)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DomainPattern {
     Exact(DomainName),
     Wildcard(DomainName),
-}
-
-impl FromStr for DomainPattern {
-    type Err = DomainParseError;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        let value = value.trim();
-        if value.is_empty() {
-            return Err(DomainParseError::Empty);
-        }
-
-        if let Some(domain) = value.strip_prefix("*.") {
-            return domain.parse().map(Self::Wildcard);
-        }
-
-        if value.contains('*') {
-            return Err(DomainParseError::InvalidWildcard);
-        }
-
-        value.parse().map(Self::Exact)
-    }
 }
 
 impl DomainPattern {
@@ -205,50 +201,49 @@ impl AsRef<str> for DomainName {
     }
 }
 
-impl FromStr for DomainName {
-    type Err = DomainParseError;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+impl DomainName {
+    fn parse(value: &str) -> Option<Self> {
         let value = value.trim().trim_end_matches('.');
         if value.is_empty() {
-            return Err(DomainParseError::Empty);
+            return None;
         }
 
-        match Host::parse(value).map_err(|_| DomainParseError::InvalidHost)? {
-            Host::Domain(domain) => Ok(Self(domain.to_ascii_lowercase())),
-            Host::Ipv4(_) | Host::Ipv6(_) => Err(DomainParseError::IpLiteral),
+        match Host::parse(value).ok()? {
+            Host::Domain(domain) => Some(Self(domain.to_ascii_lowercase())),
+            Host::Ipv4(_) | Host::Ipv6(_) => None,
+        }
+    }
+
+    fn parse_policy(list: DomainList, original: &str, domain: &str) -> Result<Self> {
+        let domain = domain.trim().trim_end_matches('.');
+        if domain.is_empty() {
+            return Err(Error::PolicyDomainEmpty {
+                list,
+                value: original.to_owned(),
+            });
+        }
+
+        match Host::parse(domain) {
+            Ok(Host::Domain(domain)) => Ok(Self(domain.to_ascii_lowercase())),
+            Ok(Host::Ipv4(_) | Host::Ipv6(_)) => Err(Error::PolicyDomainIpLiteral {
+                list,
+                value: original.to_owned(),
+            }),
+            Err(_) => Err(Error::PolicyDomainInvalidHost {
+                list,
+                value: original.to_owned(),
+            }),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DomainParseError {
-    Empty,
-    InvalidHost,
-    InvalidWildcard,
-    IpLiteral,
-}
-
-impl fmt::Display for DomainParseError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Empty => "domain empty",
-            Self::InvalidHost => "domain invalid",
-            Self::InvalidWildcard => "wildcard must use *.domain",
-            Self::IpLiteral => "domain must not be an IP literal",
-        })
-    }
-}
-
-fn push_proxy_port(ports: &mut Vec<u16>, port: Option<u16>, label: &str) -> Result<()> {
+fn push_proxy_port(ports: &mut Vec<u16>, port: Option<u16>, port_name: PolicyPort) -> Result<()> {
     let Some(port) = port else {
         return Ok(());
     };
 
     if port == 0 {
-        return Err(Error::message(format!(
-            "policy: net {label} range 1..=65535"
-        )));
+        return Err(Error::PolicyPortOutOfRange(port_name));
     }
 
     ports.push(port);
@@ -275,9 +270,7 @@ fn absolute_policy_base(policy_base: &Path) -> Result<PathBuf> {
     let policy_base = if policy_base.is_absolute() {
         policy_base.to_path_buf()
     } else {
-        env::current_dir()
-            .map_err(|source| Error::with_source("policy: cwd", source))?
-            .join(policy_base)
+        env::current_dir()?.join(policy_base)
     };
 
     Ok(normalize_path(&policy_base))
@@ -285,7 +278,7 @@ fn absolute_policy_base(policy_base: &Path) -> Result<PathBuf> {
 
 fn resolve_sandbox_path(path: &str, base: &Path, home: Option<&Path>) -> Result<PathBuf> {
     if path.is_empty() {
-        return Err(Error::message("policy: path empty"));
+        return Err(Error::PolicyPathEmpty);
     }
 
     let raw = Path::new(path);
@@ -293,12 +286,12 @@ fn resolve_sandbox_path(path: &str, base: &Path, home: Option<&Path>) -> Result<
         raw.to_path_buf()
     } else if path == "~" {
         home.map(Path::to_path_buf)
-            .ok_or_else(|| Error::message("policy: home unavailable"))?
+            .ok_or(Error::PolicyHomeUnavailable)?
     } else if let Some(rest) = path.strip_prefix("~/") {
         home.map(|home| home.join(rest))
-            .ok_or_else(|| Error::message("policy: home unavailable"))?
+            .ok_or(Error::PolicyHomeUnavailable)?
     } else if path.starts_with('~') {
-        return Err(Error::message("policy: path ~user unsupported"));
+        return Err(Error::PolicyTildeUserNotSupported);
     } else {
         base.join(raw)
     };
