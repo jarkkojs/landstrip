@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 use crate::landlock::enforce_access_policy;
 use crate::paths::normalize_path;
 use crate::policy::AccessPolicy;
+use crate::proxy::{NetworkProxies, ProxyProtocol, accept_proxy};
 use libseccomp::{
     ScmpAction, ScmpArgCompare, ScmpCompareOp, ScmpFilterContext, ScmpNotifReq, ScmpNotifResp,
     ScmpNotifRespFlags, ScmpSyscall, ScmpVersion, get_api as seccomp_api_level, notify_id_valid,
@@ -28,6 +29,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr;
+use std::thread;
 
 const NOTIFY_API: u32 = 6;
 const POLL_MS: u16 = 100;
@@ -42,6 +44,7 @@ pub(crate) fn run_network_broker(
     policy: &AccessPolicy,
     command: &OsStr,
     args: &[OsString],
+    proxies: Option<NetworkProxies>,
 ) -> Result<i32> {
     let api_level = seccomp_api_level();
     let version =
@@ -89,7 +92,20 @@ pub(crate) fn run_network_broker(
                     .map_err(|source| Error::with_source("seccomp: send notify fd", source))?;
                 drop(child_sock);
 
-                let error = Command::new(command).args(args).exec();
+                let mut child_command = Command::new(command);
+                child_command.args(args);
+                if let Some(proxies) = &proxies {
+                    let http_proxy = format!("http://{}", proxies.http_addr);
+                    let socks_proxy = format!("socks5h://{}", proxies.socks_addr);
+                    child_command
+                        .env("HTTP_PROXY", &http_proxy)
+                        .env("HTTPS_PROXY", &http_proxy)
+                        .env("ALL_PROXY", &socks_proxy)
+                        .env("SOCKS_PROXY", &socks_proxy)
+                        .env_remove("NO_PROXY");
+                }
+
+                let error = child_command.exec();
                 Err(Error::with_source(
                     format!("exec: {}", command.to_string_lossy()),
                     error,
@@ -109,6 +125,21 @@ pub(crate) fn run_network_broker(
                 .map_err(|source| Error::with_source("seccomp: receive notify fd", source))?;
             drop(parent);
             let notify_fd = notify.as_raw_fd();
+            if let Some(proxies) = proxies {
+                let NetworkProxies {
+                    domain_policy,
+                    http_listener,
+                    socks_listener,
+                    ..
+                } = proxies;
+                let http_policy = domain_policy.clone();
+                thread::spawn(move || {
+                    accept_proxy(&http_listener, &http_policy, ProxyProtocol::Http);
+                });
+                thread::spawn(move || {
+                    accept_proxy(&socks_listener, &domain_policy, ProxyProtocol::Socks);
+                });
+            }
 
             supervise_child(policy, child, notify_fd, &syscalls)
         }

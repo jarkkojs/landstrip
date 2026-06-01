@@ -110,7 +110,6 @@ impl TryFrom<&SandboxNetwork> for DomainPolicy {
 }
 
 impl DomainPolicy {
-    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn allows_host(&self, host: &str) -> bool {
         let Ok(host) = host.parse::<DomainName>() else {

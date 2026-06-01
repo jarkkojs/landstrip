@@ -10,6 +10,7 @@ mod error;
 mod landlock;
 mod paths;
 mod policy;
+mod proxy;
 mod seccomp;
 mod traversal;
 
@@ -18,7 +19,9 @@ use crate::config::load_settings;
 use crate::error::{Error, Result};
 use crate::landlock::enforce_access_policy;
 use crate::policy::lower_sandbox_policy;
+use crate::proxy::NetworkProxies;
 use std::ffi::{OsStr, OsString};
+use std::net::{Ipv4Addr, TcpListener};
 use std::os::unix::process::CommandExt;
 use std::process::{self, Command};
 
@@ -35,10 +38,50 @@ fn run() -> Result<()> {
 
     log::debug!("policy: base {}", cli.policy_base.display());
     let settings = load_settings(&cli.policy_paths)?;
-    let policy = lower_sandbox_policy(&settings.filesystem, &settings.network, &cli.policy_base)?;
+    let mut policy =
+        lower_sandbox_policy(&settings.filesystem, &settings.network, &cli.policy_base)?;
+    let proxies = if !settings.network.allowed_domains.is_empty()
+        || !settings.network.denied_domains.is_empty()
+    {
+        let http_listener = TcpListener::bind((
+            Ipv4Addr::LOCALHOST,
+            settings.network.http_proxy_port.unwrap_or(0),
+        ))
+        .map_err(|source| Error::with_source("proxy: bind HTTP", source))?;
+        let http_addr = http_listener
+            .local_addr()
+            .map_err(|source| Error::with_source("proxy: HTTP address", source))?;
+        let socks_listener = TcpListener::bind((
+            Ipv4Addr::LOCALHOST,
+            settings.network.socks_proxy_port.unwrap_or(0),
+        ))
+        .map_err(|source| Error::with_source("proxy: bind SOCKS", source))?;
+        let socks_addr = socks_listener
+            .local_addr()
+            .map_err(|source| Error::with_source("proxy: SOCKS address", source))?;
+
+        Some(NetworkProxies {
+            domain_policy: policy.network_access.domain_policy.clone(),
+            http_listener,
+            http_addr,
+            socks_listener,
+            socks_addr,
+        })
+    } else {
+        None
+    };
+    if let Some(proxies) = &proxies {
+        policy
+            .network_access
+            .connect_tcp_ports
+            .extend([proxies.http_addr.port(), proxies.socks_addr.port()]);
+        policy.network_access.connect_tcp_ports.sort_unstable();
+        policy.network_access.connect_tcp_ports.dedup();
+    }
 
     if policy.network_access.local_tcp_bind || !policy.network_access.connect_tcp_ports.is_empty() {
-        let status = seccomp::run_network_broker(&policy, &cli.command, &cli.command_args)?;
+        let status =
+            seccomp::run_network_broker(&policy, &cli.command, &cli.command_args, proxies)?;
         process::exit(status);
     }
 
