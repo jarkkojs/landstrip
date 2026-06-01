@@ -75,24 +75,24 @@ pub(crate) fn run_network_broker(
             let result = (|| -> Result<()> {
                 enforce_access_policy(policy)?;
 
-                let filter = network_filter(NetworkFilter {
-                    notify_bind,
-                    notify_connect,
-                    unix_sockets,
-                })?;
-                filter.load()?;
-                let notify = filter.get_notify_fd()?;
+                {
+                    let child_sock = child_sock;
+                    let filter = network_filter(NetworkFilter {
+                        notify_bind,
+                        notify_connect,
+                        unix_sockets,
+                    })?;
+                    filter.load()?;
+                    let notify = filter.get_notify_fd()?;
 
-                // SAFETY: notify is borrowed only for the duration of fcntl(2).
-                let notify_fd = unsafe { BorrowedFd::borrow_raw(notify) };
-                let notify = fcntl(notify_fd, FcntlArg::F_DUPFD_CLOEXEC(0))?;
-                // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
-                let notify = unsafe { OwnedFd::from_raw_fd(notify) };
+                    // SAFETY: notify is borrowed only for the duration of fcntl(2).
+                    let notify_fd = unsafe { BorrowedFd::borrow_raw(notify) };
+                    let notify = fcntl(notify_fd, FcntlArg::F_DUPFD_CLOEXEC(0))?;
+                    // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
+                    let notify = unsafe { OwnedFd::from_raw_fd(notify) };
 
-                send_fd(&child_sock, notify.as_raw_fd())?;
-                drop(notify);
-                drop(child_sock);
-                drop(filter);
+                    send_fd(&child_sock, notify.as_raw_fd())?;
+                }
                 close_inherited_fds();
 
                 let mut child_command = Command::new(command);

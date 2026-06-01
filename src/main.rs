@@ -51,13 +51,14 @@ fn run() -> Result<()> {
     }
 
     enforce_access_policy(&policy)?;
-    let filter = seccomp::network_filter(seccomp::NetworkFilter {
-        notify_bind: false,
-        notify_connect: false,
-        unix_sockets: unix_socket_filter(&policy.network_access.unix_socket_access),
-    })?;
-    filter.load().map_err(Error::Seccomp)?;
-    drop(filter);
+    {
+        let filter = seccomp::network_filter(seccomp::NetworkFilter {
+            notify_bind: false,
+            notify_connect: false,
+            unix_sockets: unix_socket_filter(&policy.network_access.unix_socket_access),
+        })?;
+        filter.load().map_err(Error::Seccomp)?;
+    }
     fd::close_inherited_fds();
     let error = Command::new(&cli.command).args(&cli.command_args).exec();
     Err(Error::Exec {
