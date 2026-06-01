@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Jarkko Sakkinen
 
 use crate::error::{Error, Result};
+use crate::fd::close_inherited_fds;
 use crate::landlock::enforce_access_policy;
 use crate::paths::normalize_path;
 use crate::policy::{AccessPolicy, UnixSocketAccess};
@@ -89,7 +90,10 @@ pub(crate) fn run_network_broker(
                 let notify = unsafe { OwnedFd::from_raw_fd(notify) };
 
                 send_fd(&child_sock, notify.as_raw_fd())?;
+                drop(notify);
                 drop(child_sock);
+                drop(filter);
+                close_inherited_fds();
 
                 let mut child_command = Command::new(command);
                 child_command.args(args);

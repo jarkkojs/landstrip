@@ -7,6 +7,7 @@
 mod cli;
 mod config;
 mod error;
+mod fd;
 mod landlock;
 mod paths;
 mod policy;
@@ -18,7 +19,6 @@ use crate::config::load_settings;
 use crate::error::{Error, Result};
 use crate::landlock::enforce_access_policy;
 use crate::policy::{UnixSocketAccess, lower_sandbox_policy};
-use std::ffi::{OsStr, OsString};
 use std::os::unix::process::CommandExt;
 use std::process::{self, Command};
 
@@ -57,7 +57,13 @@ fn run() -> Result<()> {
         unix_sockets: unix_socket_filter(&policy.network_access.unix_socket_access),
     })?;
     filter.load().map_err(Error::Seccomp)?;
-    exec_command(&cli.command, &cli.command_args)
+    drop(filter);
+    fd::close_inherited_fds();
+    let error = Command::new(&cli.command).args(&cli.command_args).exec();
+    Err(Error::Exec {
+        command: cli.command,
+        source: error,
+    })
 }
 
 fn init_logger(debug: bool) {
@@ -80,12 +86,4 @@ fn unix_socket_filter(access: &UnixSocketAccess) -> seccomp::UnixSocketFilter {
         }
         UnixSocketAccess::AllowPaths(_) => seccomp::UnixSocketFilter::PathMediated,
     }
-}
-
-fn exec_command(command: &OsStr, args: &[OsString]) -> Result<()> {
-    let error = Command::new(command).args(args).exec();
-    Err(Error::Exec {
-        command: command.to_os_string(),
-        source: error,
-    })
 }
