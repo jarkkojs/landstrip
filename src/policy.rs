@@ -6,7 +6,10 @@ use crate::error::{Error, Result};
 use crate::paths::{normalize_path, normalize_roots};
 use crate::traversal::subtract_denied_roots;
 use std::env;
+use std::fmt;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use url::Host;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AccessPolicy {
@@ -27,6 +30,13 @@ pub(crate) struct NetworkAccess {
     pub(crate) connect_tcp_ports: Vec<u16>,
     pub(crate) restrict_bind_tcp: bool,
     pub(crate) local_tcp_bind: bool,
+    pub(crate) domain_policy: DomainPolicy,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DomainPolicy {
+    allowed: Vec<DomainPattern>,
+    denied: Vec<DomainPattern>,
 }
 
 pub(crate) fn lower_sandbox_policy(
@@ -77,25 +87,140 @@ fn lower_network_policy(network: &SandboxNetwork) -> Result<NetworkAccess> {
     connect_tcp_ports.sort_unstable();
     connect_tcp_ports.dedup();
 
-    if !network.allowed_domains.is_empty() {
-        log::debug!(
-            "network.allowed_domains: {} (skipped)",
-            serde_json::to_string(&network.allowed_domains).unwrap_or_else(|_| "[]".to_owned())
-        );
-    }
-    if !network.denied_domains.is_empty() {
-        log::debug!(
-            "network.denied_domains: {} (skipped)",
-            serde_json::to_string(&network.denied_domains).unwrap_or_else(|_| "[]".to_owned())
-        );
-    }
+    let domain_policy = DomainPolicy::try_from(network)?;
 
     Ok(NetworkAccess {
         restrict_connect_tcp: true,
         connect_tcp_ports,
         restrict_bind_tcp: !network.allow_local_binding,
         local_tcp_bind: network.allow_local_binding,
+        domain_policy,
     })
+}
+
+impl TryFrom<&SandboxNetwork> for DomainPolicy {
+    type Error = Error;
+
+    fn try_from(network: &SandboxNetwork) -> Result<Self> {
+        Ok(Self {
+            allowed: parse_domains("allowedDomains", &network.allowed_domains)?,
+            denied: parse_domains("deniedDomains", &network.denied_domains)?,
+        })
+    }
+}
+
+impl DomainPolicy {
+    #[allow(dead_code)]
+    #[must_use]
+    pub(crate) fn allows_host(&self, host: &str) -> bool {
+        let Ok(host) = host.parse::<DomainName>() else {
+            return false;
+        };
+
+        if self.denied.iter().any(|pattern| pattern.matches(&host)) {
+            return false;
+        }
+
+        self.allowed.iter().any(|pattern| pattern.matches(&host))
+    }
+}
+
+fn parse_domains(label: &str, values: &[String]) -> Result<Vec<DomainPattern>> {
+    let mut patterns = Vec::with_capacity(values.len());
+
+    for value in values {
+        let pattern = value
+            .parse::<DomainPattern>()
+            .map_err(|source| Error::message(format!("policy: net {label} {source}: {value}")))?;
+        if !patterns.contains(&pattern) {
+            patterns.push(pattern);
+        }
+    }
+
+    Ok(patterns)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DomainPattern {
+    Exact(DomainName),
+    Wildcard(DomainName),
+}
+
+impl FromStr for DomainPattern {
+    type Err = DomainParseError;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(DomainParseError::Empty);
+        }
+
+        if let Some(domain) = value.strip_prefix("*.") {
+            return domain.parse().map(Self::Wildcard);
+        }
+
+        if value.contains('*') {
+            return Err(DomainParseError::InvalidWildcard);
+        }
+
+        value.parse().map(Self::Exact)
+    }
+}
+
+impl DomainPattern {
+    fn matches(&self, host: &DomainName) -> bool {
+        let host = host.as_ref();
+        match self {
+            Self::Exact(domain) => host == domain.as_ref(),
+            Self::Wildcard(domain) => host
+                .strip_suffix(domain.as_ref())
+                .is_some_and(|prefix| prefix.ends_with('.') && prefix.len() > 1),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DomainName(String);
+
+impl AsRef<str> for DomainName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for DomainName {
+    type Err = DomainParseError;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        let value = value.trim().trim_end_matches('.');
+        if value.is_empty() {
+            return Err(DomainParseError::Empty);
+        }
+
+        match Host::parse(value).map_err(|_| DomainParseError::InvalidHost)? {
+            Host::Domain(domain) => Ok(Self(domain.to_ascii_lowercase())),
+            Host::Ipv4(_) | Host::Ipv6(_) => Err(DomainParseError::IpLiteral),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DomainParseError {
+    Empty,
+    InvalidHost,
+    InvalidWildcard,
+    IpLiteral,
+}
+
+impl fmt::Display for DomainParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Empty => "domain empty",
+            Self::InvalidHost => "domain invalid",
+            Self::InvalidWildcard => "wildcard must use *.domain",
+            Self::IpLiteral => "domain must not be an IP literal",
+        })
+    }
 }
 
 fn push_proxy_port(ports: &mut Vec<u16>, port: Option<u16>, label: &str) -> Result<()> {
