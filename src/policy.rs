@@ -220,9 +220,12 @@ impl DomainPattern {
         let host = host.as_ref();
         match self {
             Self::Exact(domain) => host == domain.as_ref(),
-            Self::Wildcard(domain) => host
-                .strip_suffix(domain.as_ref())
-                .is_some_and(|prefix| prefix.ends_with('.') && prefix.len() > 1),
+            Self::Wildcard(domain) => {
+                let domain = domain.as_ref();
+                host.len() > domain.len()
+                    && host.ends_with(domain)
+                    && host.as_bytes()[host.len() - domain.len() - 1] == b'.'
+            }
         }
     }
 }
