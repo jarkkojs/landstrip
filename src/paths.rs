@@ -16,11 +16,11 @@ pub(crate) fn normalize_roots(paths: &mut Vec<PathBuf>) {
 pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     match fs::canonicalize(path) {
         Ok(path) => path,
-        Err(_) => lexical_normalize(path),
+        Err(_) => normalize_path_lexically(path),
     }
 }
 
-fn lexical_normalize(path: &Path) -> PathBuf {
+pub(crate) fn normalize_path_lexically(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
 
     for component in path.components() {

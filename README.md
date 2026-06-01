@@ -5,6 +5,16 @@ Landlock LSM and SECCOMP. The state is parametrized from JSON policy files,
 which are compatible with the JSON format of
 [Anthropic Sandbox Runtime](https://github.com/anthropic-experimental/sandbox-runtime).
 
+Comparison to macOS/Seatbelt backend:
+
+- Seatbelt: sandbox-exec/Seatbelt. Landstrip: Landlock + seccomp.
+- Seatbelt: dynamic filesystem rules. Landstrip: snapshot at launch.
+- Seatbelt: proxy ports via Seatbelt. Landstrip: loopback proxy ports
+- Both accept Claude Code-style JSON subset and ignore unknown settings.
+
+Landstrip's practical benefit is exactly this near-proximity of configuration
+with Seatbelt sandbox.
+
 ## Sandbox model
 
 ### Files
@@ -24,6 +34,11 @@ when an allowed ancestor rule covers it.
 Directories created outside the sandbox after policy setup are not exposed
 merely because their paths match a previous traversal result.
 
+Paths use the same syntax as the macOS sandbox runtime: absolute paths,
+relative paths from the current directory, `~`, and gitignore-style `*`, `**`,
+`?`, and character-class globs. Glob patterns are resolved when the sandbox is
+created and therefore follow the same snapshot semantics as other paths.
+
 ### Network
 
 For TCP port rules `landstrip` uses Landlock TCP port rules and a seccomp
@@ -31,10 +46,11 @@ user-notification broker for address-level decisions. When the sandbox is
 applied, direct TCP connections are denied by default.
 
 `httpProxyPort` and `socksProxyPort` select local HTTP and SOCKS proxy ports.
-Connections to these ports are allowed only on loopback addresses. If domain
-filters are configured, `landstrip` starts the corresponding proxies and exports
-proxy environment variables to the child. `HTTP_PROXY` and `SOCKS_PROXY` provide
-defaults that the JSON attributes override.
+Connections to these ports are allowed only on loopback addresses. `landstrip`
+does not start proxies or set proxy environment variables; the caller supplies
+those when needed. Domain filtering is likewise a caller/runtime responsibility.
+Direct TCP remains denied except for configured proxy ports. Other settings are
+ignored.
 
 Unix domain sockets are denied by default. `allowUnixSockets` permits pathname
 socket `connect` and `bind` operations under listed paths, with relative paths

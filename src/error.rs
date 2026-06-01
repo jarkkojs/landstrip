@@ -3,7 +3,6 @@
 
 use std::ffi::OsString;
 use std::io;
-use std::num::ParseIntError;
 use std::path::PathBuf;
 use strum_macros::Display;
 
@@ -36,22 +35,6 @@ pub(crate) enum Error {
     },
     PeerClosed,
     PolicyDenied,
-    PolicyDomainEmpty {
-        list: DomainList,
-        value: String,
-    },
-    PolicyDomainInvalidHost {
-        list: DomainList,
-        value: String,
-    },
-    PolicyDomainInvalidWildcard {
-        list: DomainList,
-        value: String,
-    },
-    PolicyDomainIpLiteral {
-        list: DomainList,
-        value: String,
-    },
     PolicyFile {
         path: PathBuf,
         source: io::Error,
@@ -62,36 +45,7 @@ pub(crate) enum Error {
     },
     PolicyHomeUnavailable,
     PolicyPathEmpty,
-    PolicyPortEmpty(PolicyPort),
     PolicyPortOutOfRange(PolicyPort),
-    PolicyPortParse {
-        port: PolicyPort,
-        source: ParseIntError,
-    },
-    PolicyTildeUserNotSupported,
-    ProxyAuthorityHasUserinfo,
-    ProxyAuthorityMissingHost,
-    ProxyHttpHeaderTooLarge,
-    ProxyIncompleteHttpRequest,
-    ProxyInvalidAuthority,
-    ProxyInvalidAuthorityHeader,
-    ProxyInvalidHttpHeaderName,
-    ProxyInvalidHttpHeaderValue,
-    ProxyInvalidHttpMethod,
-    ProxyInvalidHttpRequest,
-    ProxyInvalidHttpResponse,
-    ProxyInvalidHttpTarget,
-    ProxyInvalidProxyUrlPath,
-    ProxyInvalidSocksDomain,
-    ProxyMissingAuthorityHeader,
-    ProxyMissingHttpMethod,
-    ProxyMissingHttpTarget,
-    ProxyMissingHttpVersion,
-    ProxyMissingProxyUrlHost,
-    ProxyNotSupportedHttpVersion,
-    ProxyNotSupportedProxyUrlScheme,
-    ProxyNotSupportedSocksRequestVersion,
-    ProxyNotSupportedSocksVersion,
     Seccomp(libseccomp::error::SeccompError),
     Usage(String),
 }
@@ -135,15 +89,6 @@ impl From<landlock::PathFdError> for Error {
 #[derive(Clone, Copy, Debug, Display)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum PolicyPort {
-    HttpProxyEnvironment,
     HttpProxyPolicy,
-    SocksProxyEnvironment,
     SocksProxyPolicy,
-}
-
-#[derive(Clone, Copy, Debug, Display)]
-#[strum(serialize_all = "snake_case")]
-pub(crate) enum DomainList {
-    Allowed,
-    Denied,
 }

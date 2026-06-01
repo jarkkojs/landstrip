@@ -2,12 +2,13 @@
 // Copyright (c) 2026 Jarkko Sakkinen
 
 use crate::config::{SandboxFilesystem, SandboxNetwork};
-use crate::error::{DomainList, Error, PolicyPort, Result};
-use crate::paths::{normalize_path, normalize_roots};
+use crate::error::{Error, PolicyPort, Result};
+use crate::paths::{normalize_path, normalize_path_lexically, normalize_roots};
 use crate::traversal::subtract_denied_roots;
 use std::env;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
-use url::Host;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AccessPolicy {
@@ -29,19 +30,12 @@ pub(crate) struct NetworkAccess {
     pub(crate) restrict_bind_tcp: bool,
     pub(crate) local_tcp_bind: bool,
     pub(crate) unix_socket_access: UnixSocketAccess,
-    pub(crate) domain_policy: DomainPolicy,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum UnixSocketAccess {
     Unrestricted,
     AllowPaths(Vec<PathBuf>),
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct DomainPolicy {
-    allowed: Vec<DomainPattern>,
-    denied: Vec<DomainPattern>,
 }
 
 pub(crate) fn lower_sandbox_policy(
@@ -94,7 +88,6 @@ fn lower_network_policy(
     connect_tcp_ports.sort_unstable();
     connect_tcp_ports.dedup();
 
-    let domain_policy = DomainPolicy::try_from(network)?;
     let unix_socket_paths = resolve_paths(&network.allow_unix_sockets, policy_base, home)?;
     let unix_socket_access = if network.allow_all_unix_sockets {
         UnixSocketAccess::Unrestricted
@@ -108,171 +101,7 @@ fn lower_network_policy(
         restrict_bind_tcp: !network.allow_local_binding,
         local_tcp_bind: network.allow_local_binding,
         unix_socket_access,
-        domain_policy,
     })
-}
-
-impl TryFrom<&SandboxNetwork> for DomainPolicy {
-    type Error = Error;
-
-    fn try_from(network: &SandboxNetwork) -> Result<Self> {
-        Ok(Self {
-            allowed: parse_domains(DomainList::Allowed, &network.allowed_domains)?,
-            denied: parse_domains(DomainList::Denied, &network.denied_domains)?,
-        })
-    }
-}
-
-impl DomainPolicy {
-    #[must_use]
-    pub(crate) fn allows_host(&self, host: &str) -> bool {
-        let Some(host) = DomainName::parse(host) else {
-            return false;
-        };
-
-        if self.denied.iter().any(|pattern| pattern.matches(&host)) {
-            return false;
-        }
-
-        self.allowed.iter().any(|pattern| pattern.matches(&host))
-    }
-}
-
-fn parse_domains(list: DomainList, values: &[String]) -> Result<Vec<DomainPattern>> {
-    let mut patterns = Vec::with_capacity(values.len());
-
-    for value in values {
-        let pattern = parse_domain_pattern(list, value)?;
-        if !patterns.contains(&pattern) {
-            patterns.push(pattern);
-        }
-    }
-
-    Ok(patterns)
-}
-
-fn parse_domain_pattern(list: DomainList, value: &str) -> Result<DomainPattern> {
-    let domain = value.trim();
-    if domain.is_empty() {
-        return Err(Error::PolicyDomainEmpty {
-            list,
-            value: value.to_owned(),
-        });
-    }
-
-    if domain.contains("://") || domain.contains('/') || domain.contains(':') {
-        return Err(Error::PolicyDomainInvalidHost {
-            list,
-            value: value.to_owned(),
-        });
-    }
-
-    if let Some(domain) = domain.strip_prefix("*.") {
-        validate_wildcard_domain(list, value, domain)?;
-        return DomainName::parse_policy(list, value, domain).map(DomainPattern::Wildcard);
-    }
-
-    if domain.contains('*') {
-        return Err(Error::PolicyDomainInvalidWildcard {
-            list,
-            value: value.to_owned(),
-        });
-    }
-
-    validate_exact_domain(list, value, domain)?;
-    DomainName::parse_policy(list, value, domain).map(DomainPattern::Exact)
-}
-
-fn validate_exact_domain(list: DomainList, original: &str, domain: &str) -> Result<()> {
-    if domain.eq_ignore_ascii_case("localhost") {
-        return Ok(());
-    }
-
-    if !domain.contains('.') || domain.starts_with('.') || domain.ends_with('.') {
-        return Err(Error::PolicyDomainInvalidHost {
-            list,
-            value: original.to_owned(),
-        });
-    }
-
-    Ok(())
-}
-
-fn validate_wildcard_domain(list: DomainList, original: &str, domain: &str) -> Result<()> {
-    if !domain.contains('.') || domain.starts_with('.') || domain.ends_with('.') {
-        return Err(Error::PolicyDomainInvalidWildcard {
-            list,
-            value: original.to_owned(),
-        });
-    }
-
-    Ok(())
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum DomainPattern {
-    Exact(DomainName),
-    Wildcard(DomainName),
-}
-
-impl DomainPattern {
-    fn matches(&self, host: &DomainName) -> bool {
-        let host = host.as_ref();
-        match self {
-            Self::Exact(domain) => host == domain.as_ref(),
-            Self::Wildcard(domain) => {
-                let domain = domain.as_ref();
-                host.len() > domain.len()
-                    && host.ends_with(domain)
-                    && host.as_bytes()[host.len() - domain.len() - 1] == b'.'
-            }
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DomainName(String);
-
-impl AsRef<str> for DomainName {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl DomainName {
-    fn parse(value: &str) -> Option<Self> {
-        let value = value.trim().trim_end_matches('.');
-        if value.is_empty() {
-            return None;
-        }
-
-        match Host::parse(value).ok()? {
-            Host::Domain(domain) => Some(Self(domain.to_ascii_lowercase())),
-            Host::Ipv4(_) | Host::Ipv6(_) => None,
-        }
-    }
-
-    fn parse_policy(list: DomainList, original: &str, domain: &str) -> Result<Self> {
-        let domain = domain.trim().trim_end_matches('.');
-        if domain.is_empty() {
-            return Err(Error::PolicyDomainEmpty {
-                list,
-                value: original.to_owned(),
-            });
-        }
-
-        match Host::parse(domain) {
-            Ok(Host::Domain(domain)) => Ok(Self(domain.to_ascii_lowercase())),
-            Ok(Host::Ipv4(_) | Host::Ipv6(_)) => Err(Error::PolicyDomainIpLiteral {
-                list,
-                value: original.to_owned(),
-            }),
-            Err(_) => Err(Error::PolicyDomainInvalidHost {
-                list,
-                value: original.to_owned(),
-            }),
-        }
-    }
 }
 
 fn push_proxy_port(ports: &mut Vec<u16>, port: Option<u16>, port_name: PolicyPort) -> Result<()> {
@@ -296,7 +125,12 @@ fn resolve_paths(
     let mut resolved = Vec::with_capacity(paths.len());
 
     for path in paths {
-        resolved.push(resolve_sandbox_path(path, policy_base, home)?);
+        let path = resolve_sandbox_path(path, policy_base, home)?;
+        if contains_glob_chars(&path) {
+            resolved.extend(expand_glob_path(&path)?);
+        } else {
+            resolved.push(normalize_path(&path));
+        }
     }
 
     normalize_roots(&mut resolved);
@@ -328,11 +162,212 @@ fn resolve_sandbox_path(path: &str, base: &Path, home: Option<&Path>) -> Result<
     } else if let Some(rest) = path.strip_prefix("~/") {
         home.map(|home| home.join(rest))
             .ok_or(Error::PolicyHomeUnavailable)?
-    } else if path.starts_with('~') {
-        return Err(Error::PolicyTildeUserNotSupported);
     } else {
         base.join(raw)
     };
 
-    Ok(normalize_path(&resolved))
+    Ok(normalize_path_lexically(&resolved))
+}
+
+fn contains_glob_chars(path: &Path) -> bool {
+    path.to_string_lossy()
+        .bytes()
+        .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b']'))
+}
+
+fn expand_glob_path(pattern: &Path) -> Result<Vec<PathBuf>> {
+    let pattern = pattern.to_string_lossy();
+    let base = glob_base(&pattern);
+    let mut matches = Vec::new();
+
+    match fs::symlink_metadata(&base) {
+        Ok(_) => collect_glob_matches(&base, &pattern, &mut matches)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => return Err(source.into()),
+    }
+
+    Ok(matches)
+}
+
+fn glob_base(pattern: &str) -> PathBuf {
+    let glob_at = pattern
+        .bytes()
+        .position(|byte| matches!(byte, b'*' | b'?' | b'[' | b']'))
+        .expect("glob pattern contains a glob character");
+    let prefix = &pattern[..glob_at];
+    let base = if prefix.ends_with('/') {
+        prefix.trim_end_matches('/')
+    } else {
+        Path::new(prefix)
+            .parent()
+            .and_then(Path::to_str)
+            .unwrap_or("/")
+    };
+
+    if base.is_empty() {
+        PathBuf::from("/")
+    } else {
+        PathBuf::from(base)
+    }
+}
+
+fn collect_glob_matches(path: &Path, pattern: &str, matches: &mut Vec<PathBuf>) -> Result<()> {
+    let candidate = normalize_path_lexically(path);
+    if glob_matches(pattern.as_bytes(), candidate.to_string_lossy().as_bytes()) {
+        matches.push(candidate.clone());
+    }
+
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(path)? {
+        collect_glob_matches(&entry?.path(), pattern, matches)?;
+    }
+
+    Ok(())
+}
+
+fn glob_matches(pattern: &[u8], text: &[u8]) -> bool {
+    let mut memo = vec![vec![None; text.len() + 1]; pattern.len() + 1];
+    glob_matches_at(pattern, text, 0, 0, &mut memo)
+}
+
+fn glob_matches_at(
+    pattern: &[u8],
+    text: &[u8],
+    pattern_at: usize,
+    text_at: usize,
+    memo: &mut [Vec<Option<bool>>],
+) -> bool {
+    if let Some(result) = memo[pattern_at][text_at] {
+        return result;
+    }
+
+    let result = if pattern_at == pattern.len() {
+        text_at == text.len()
+    } else if pattern[pattern_at..].starts_with(b"**/") {
+        globstar_slash_matches(pattern, text, pattern_at, text_at, memo)
+    } else if pattern[pattern_at..].starts_with(b"**") {
+        globstar_matches(pattern, text, pattern_at, text_at, memo)
+    } else {
+        match pattern[pattern_at] {
+            b'*' => star_matches(pattern, text, pattern_at, text_at, memo),
+            b'?' => {
+                text_at < text.len()
+                    && text[text_at] != b'/'
+                    && glob_matches_at(pattern, text, pattern_at + 1, text_at + 1, memo)
+            }
+            b'[' => class_matches(pattern, text, pattern_at, text_at, memo),
+            byte => {
+                text_at < text.len()
+                    && text[text_at] == byte
+                    && glob_matches_at(pattern, text, pattern_at + 1, text_at + 1, memo)
+            }
+        }
+    };
+
+    memo[pattern_at][text_at] = Some(result);
+    result
+}
+
+fn globstar_slash_matches(
+    pattern: &[u8],
+    text: &[u8],
+    pattern_at: usize,
+    text_at: usize,
+    memo: &mut [Vec<Option<bool>>],
+) -> bool {
+    if glob_matches_at(pattern, text, pattern_at + 3, text_at, memo) {
+        return true;
+    }
+
+    for next in text_at..text.len() {
+        if text[next] == b'/' && glob_matches_at(pattern, text, pattern_at + 3, next + 1, memo) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn globstar_matches(
+    pattern: &[u8],
+    text: &[u8],
+    pattern_at: usize,
+    text_at: usize,
+    memo: &mut [Vec<Option<bool>>],
+) -> bool {
+    for next in text_at..=text.len() {
+        if glob_matches_at(pattern, text, pattern_at + 2, next, memo) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn star_matches(
+    pattern: &[u8],
+    text: &[u8],
+    pattern_at: usize,
+    text_at: usize,
+    memo: &mut [Vec<Option<bool>>],
+) -> bool {
+    let mut next = text_at;
+    while next <= text.len() {
+        if glob_matches_at(pattern, text, pattern_at + 1, next, memo) {
+            return true;
+        }
+        if next == text.len() || text[next] == b'/' {
+            break;
+        }
+        next += 1;
+    }
+
+    false
+}
+
+fn class_matches(
+    pattern: &[u8],
+    text: &[u8],
+    pattern_at: usize,
+    text_at: usize,
+    memo: &mut [Vec<Option<bool>>],
+) -> bool {
+    let Some(class_end) = pattern[pattern_at + 1..]
+        .iter()
+        .position(|byte| *byte == b']')
+        .map(|offset| pattern_at + 1 + offset)
+    else {
+        return text_at < text.len()
+            && text[text_at] == b'['
+            && glob_matches_at(pattern, text, pattern_at + 1, text_at + 1, memo);
+    };
+
+    text_at < text.len()
+        && text[text_at] != b'/'
+        && byte_in_class(text[text_at], &pattern[pattern_at + 1..class_end])
+        && glob_matches_at(pattern, text, class_end + 1, text_at + 1, memo)
+}
+
+fn byte_in_class(byte: u8, class: &[u8]) -> bool {
+    let mut at = 0;
+
+    while at < class.len() {
+        if at + 2 < class.len() && class[at + 1] == b'-' {
+            if byte >= class[at] && byte <= class[at + 2] {
+                return true;
+            }
+            at += 3;
+        } else {
+            if byte == class[at] {
+                return true;
+            }
+            at += 1;
+        }
+    }
+
+    false
 }

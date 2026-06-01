@@ -54,9 +54,7 @@ The relevant policy shape is:
     "socksProxyPort": 8081,
     "allowLocalBinding": false,
     "allowUnixSockets": ["/run/user/1000/agent.sock"],
-    "allowAllUnixSockets": false,
-    "allowedDomains": ["api.anthropic.com"],
-    "deniedDomains": []
+    "allowAllUnixSockets": false
   }
 }
 .Ed
@@ -68,6 +66,13 @@ was started. Absolute paths are used as-is. The
 and
 .Sq ~/
 prefixes resolve to the current user's home directory.
+Path entries use the same syntax as the macOS sandbox runtime: absolute paths,
+relative paths, and gitignore-style
+.Sq * ,
+.Sq ** ,
+.Sq ? ,
+and character-class globs. Glob patterns are resolved when the sandbox is
+created and therefore follow the same snapshot semantics as other paths.
 .Pp
 Write access is denied by default. The
 .Va allowWrite
@@ -96,14 +101,12 @@ denied by default.
 and
 .Va socksProxyPort
 select local HTTP and SOCKS proxy ports. Connections to these ports are allowed
-only on loopback addresses. If domain filters are configured,
+only on loopback addresses.
 .Nm
-starts the corresponding proxies and exports proxy environment variables to the
-child.
-.Ev HTTP_PROXY
-and
-.Ev SOCKS_PROXY
-provide defaults that the JSON attributes override.
+does not start proxies or set proxy environment variables; the caller supplies
+those when needed. Domain filtering is likewise a caller/runtime responsibility.
+Direct TCP remains denied except for configured proxy ports.
+Other settings are ignored.
 .Pp
 .Va allowUnixSockets
 permits pathname Unix socket
