@@ -160,7 +160,15 @@ fn parse_domain_pattern(list: DomainList, value: &str) -> Result<DomainPattern> 
         });
     }
 
+    if domain.contains("://") || domain.contains('/') || domain.contains(':') {
+        return Err(Error::PolicyDomainInvalidHost {
+            list,
+            value: value.to_owned(),
+        });
+    }
+
     if let Some(domain) = domain.strip_prefix("*.") {
+        validate_wildcard_domain(list, value, domain)?;
         return DomainName::parse_policy(list, value, domain).map(DomainPattern::Wildcard);
     }
 
@@ -171,7 +179,34 @@ fn parse_domain_pattern(list: DomainList, value: &str) -> Result<DomainPattern> 
         });
     }
 
+    validate_exact_domain(list, value, domain)?;
     DomainName::parse_policy(list, value, domain).map(DomainPattern::Exact)
+}
+
+fn validate_exact_domain(list: DomainList, original: &str, domain: &str) -> Result<()> {
+    if domain.eq_ignore_ascii_case("localhost") {
+        return Ok(());
+    }
+
+    if !domain.contains('.') || domain.starts_with('.') || domain.ends_with('.') {
+        return Err(Error::PolicyDomainInvalidHost {
+            list,
+            value: original.to_owned(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_wildcard_domain(list: DomainList, original: &str, domain: &str) -> Result<()> {
+    if !domain.contains('.') || domain.starts_with('.') || domain.ends_with('.') {
+        return Err(Error::PolicyDomainInvalidWildcard {
+            list,
+            value: original.to_owned(),
+        });
+    }
+
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
