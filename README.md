@@ -11,7 +11,7 @@ macOS Seatbelt backend.
 | Area         | Seatbelt                 | Landstrip                    |
 | ------------ | ------------------------ | -----------------------------|
 | Policy       | path based rules         | file based rules             |
-| Timing       | dynamic subset of paths  | file scan at launch          |
+| Timing       | dynamic subset of paths  | file based static ruleset    |
 | TCP          | localhost proxy ports    | loopback proxy ports         |
 | Unix sockets | allowlist                | allowlist via seccomp broker |
 
