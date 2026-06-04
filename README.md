@@ -1,14 +1,12 @@
 # landstrip
 
-`landstrip` runs a command in a Linux sandbox built from Landlock access control
-rules and seccomp.
+`landstrip` runs a command in a Linux OS-level sandbox using Landlock LSM in
+Linux, and Seatbelt in macOS.  It accepts the Anthropic Sandbox Runtime JSON
+subset as the policy.
 
-`landstrip` accepts the Anthropic Sandbox Runtime JSON subset used by the
-macOS Seatbelt backend.
+Backends compared:
 
-## Seatbelt and Landstrip comparison
-
-| Area         | Seatbelt                 | Landstrip                    |
+| Area         | macOS                    | Linux                        |
 | ------------ | ------------------------ | -----------------------------|
 | Policy       | path based rules         | file based rules             |
 | Timing       | dynamic subset of paths  | file based static ruleset    |

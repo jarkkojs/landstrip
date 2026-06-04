@@ -549,11 +549,11 @@ fn add_unix_socket_filters(
     Ok(())
 }
 
-fn needs_unix_socket_broker(access: &UnixSocketAccess) -> bool {
+pub(crate) fn needs_unix_socket_broker(access: &UnixSocketAccess) -> bool {
     matches!(access, UnixSocketAccess::AllowPaths(paths) if !paths.is_empty())
 }
 
-fn unix_socket_filter(access: &UnixSocketAccess) -> UnixSocketFilter {
+pub(crate) fn unix_socket_filter(access: &UnixSocketAccess) -> UnixSocketFilter {
     match access {
         UnixSocketAccess::Unrestricted => UnixSocketFilter::Unrestricted,
         UnixSocketAccess::AllowPaths(paths) if paths.is_empty() => UnixSocketFilter::DenyAll,

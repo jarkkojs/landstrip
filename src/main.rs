@@ -4,23 +4,34 @@
 #![deny(clippy::all)]
 #![deny(clippy::pedantic)]
 
+mod backend;
 mod cli;
 mod config;
 mod error;
+#[cfg(target_os = "linux")]
 mod fd;
+#[cfg(target_os = "linux")]
 mod landlock;
+#[cfg(target_os = "linux")]
+mod linux;
 mod paths;
 mod policy;
+#[cfg(target_os = "linux")]
 mod seccomp;
 mod traversal;
 
+#[cfg(target_os = "macos")]
+mod apple;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+mod fallback;
+
+use crate::backend::Backend;
 use crate::cli::parse_cli;
 use crate::config::load_settings;
 use crate::error::{Error, Result};
-use crate::landlock::enforce_access_policy;
-use crate::policy::{UnixSocketAccess, lower_sandbox_policy};
-use std::os::unix::process::CommandExt;
-use std::process::{self, Command};
+use crate::policy::lower_sandbox_policy;
+use std::process;
 
 fn main() {
     if let Err(error) = run() {
@@ -42,29 +53,9 @@ fn run() -> Result<()> {
     let settings = load_settings(&cli.policy_paths)?;
     let policy = lower_sandbox_policy(&settings.filesystem, &settings.network, &cli.policy_base)?;
 
-    if policy.network_access.local_tcp_bind
-        || !policy.network_access.connect_tcp_ports.is_empty()
-        || needs_unix_socket_broker(&policy.network_access.unix_socket_access)
-    {
-        let status = seccomp::run_network_broker(&policy, &cli.command, &cli.command_args)?;
-        process::exit(status);
-    }
+    backend::PlatformBackend.execute(&policy, &cli.command, &cli.command_args)?;
 
-    enforce_access_policy(&policy)?;
-    {
-        let filter = seccomp::network_filter(seccomp::NetworkFilter {
-            notify_bind: false,
-            notify_connect: false,
-            unix_sockets: unix_socket_filter(&policy.network_access.unix_socket_access),
-        })?;
-        filter.load().map_err(Error::Seccomp)?;
-    }
-    fd::close_inherited_fds();
-    let error = Command::new(&cli.command).args(&cli.command_args).exec();
-    Err(Error::Exec {
-        command: cli.command,
-        source: error,
-    })
+    Ok(())
 }
 
 fn init_logger(debug: bool) {
@@ -73,18 +64,4 @@ fn init_logger(debug: bool) {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
         .format_timestamp(None)
         .init();
-}
-
-fn needs_unix_socket_broker(access: &UnixSocketAccess) -> bool {
-    matches!(access, UnixSocketAccess::AllowPaths(paths) if !paths.is_empty())
-}
-
-fn unix_socket_filter(access: &UnixSocketAccess) -> seccomp::UnixSocketFilter {
-    match access {
-        UnixSocketAccess::Unrestricted => seccomp::UnixSocketFilter::Unrestricted,
-        UnixSocketAccess::AllowPaths(paths) if paths.is_empty() => {
-            seccomp::UnixSocketFilter::DenyAll
-        }
-        UnixSocketAccess::AllowPaths(_) => seccomp::UnixSocketFilter::PathMediated,
-    }
 }
