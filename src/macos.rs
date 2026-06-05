@@ -100,6 +100,11 @@ fn render_read_rules(sb: &mut String, read_access: &ReadAccess) {
 }
 
 fn render_network_rules(sb: &mut String, network: &NetworkAccess) {
+    if network.is_unrestricted() {
+        sb.push_str("(allow network*)\n");
+        return;
+    }
+
     // Outbound TCP: deny everything, then allow only proxy loopback ports.
     if network.restrict_connect_tcp {
         sb.push_str("(deny network-outbound)\n");

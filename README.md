@@ -10,13 +10,32 @@ Backends compared:
 | ------------ | ------------------------ | ---------------------------- | ------------------------------- |
 | Policy       | path based rules         | file based rules             | access control list (ACL)       |
 | Timing       | dynamic subset of paths  | file based static ruleset    | persistent ACLs                 |
-| TCP          | localhost proxy ports    | loopback proxy ports         | allowlist                       |
+| TCP          | localhost proxy ports    | loopback proxy ports         | unsupported                     |
 | Unix sockets | allowlist                | allowlist via seccomp broker | unsupported                     |
 
-Windows uses a AppContainer. The backend grants the generated AppContainer SID
+Windows uses an AppContainer. The backend grants the generated AppContainer SID
 access to the lowered read and write roots, so Windows policies must use
-explicit read allowlists. TCP and Unix socket policies are rejected until
-Windows enforcement exists.
+explicit read allowlists. Fine-grained TCP and Unix socket policies are rejected
+until Windows enforcement exists.
+
+## Network Policy
+
+Sandbox mode denies direct network access by default. Proxy ports, local binding,
+and Unix sockets can be allowed with the Anthropic Sandbox Runtime network fields.
+
+For a filesystem-only sandbox with unrestricted direct network access, set:
+
+```json
+{
+  "network": {
+    "allowNetwork": true
+  }
+}
+```
+
+On Linux and macOS, `allowNetwork` disables landstrip network enforcement while
+leaving filesystem policy enforcement in place. Windows rejects unrestricted
+network policies until Windows network support exists.
 
 ## Licensing
 

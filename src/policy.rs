@@ -42,6 +42,26 @@ pub(crate) struct NetworkAccess {
     pub(crate) unix_socket_access: UnixSocketAccess,
 }
 
+impl NetworkAccess {
+    pub(crate) fn unrestricted() -> Self {
+        Self {
+            restrict_connect_tcp: false,
+            connect_tcp_ports: Vec::new(),
+            restrict_bind_tcp: false,
+            local_tcp_bind: false,
+            unix_socket_access: UnixSocketAccess::Unrestricted,
+        }
+    }
+
+    pub(crate) fn is_unrestricted(&self) -> bool {
+        !self.restrict_connect_tcp
+            && self.connect_tcp_ports.is_empty()
+            && !self.restrict_bind_tcp
+            && !self.local_tcp_bind
+            && matches!(self.unix_socket_access, UnixSocketAccess::Unrestricted)
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) enum UnixSocketAccess {
     Unrestricted,
@@ -89,6 +109,10 @@ fn lower_network_policy(
     policy_base: &Path,
     home: Option<&Path>,
 ) -> Result<NetworkAccess> {
+    if network.allow_network {
+        return Ok(NetworkAccess::unrestricted());
+    }
+
     let mut connect_tcp_ports = Vec::new();
     push_proxy_port(
         &mut connect_tcp_ports,

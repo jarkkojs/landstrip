@@ -27,6 +27,7 @@ pub(crate) struct SandboxFilesystem {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct SandboxNetwork {
+    pub(crate) allow_network: bool,
     pub(crate) allow_local_binding: bool,
     pub(crate) allow_all_unix_sockets: bool,
     pub(crate) allow_unix_sockets: Vec<String>,

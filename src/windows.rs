@@ -71,6 +71,12 @@ fn reject_unsupported_policy(policy: &AccessPolicy) -> Result<()> {
         ));
     }
 
+    if policy.network_access.is_unrestricted() {
+        return Err(Error::WindowsUnsupportedPolicy(
+            "unrestricted network is not supported yet",
+        ));
+    }
+
     if policy.network_access.local_tcp_bind || !policy.network_access.connect_tcp_ports.is_empty() {
         return Err(Error::WindowsUnsupportedPolicy(
             "TCP policies are not supported yet",

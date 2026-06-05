@@ -23,16 +23,20 @@ impl Backend for LinuxBackend {
         command: &OsStr,
         args: &[OsString],
     ) -> Result<()> {
-        if policy.network_access.local_tcp_bind
-            || !policy.network_access.connect_tcp_ports.is_empty()
-            || seccomp::needs_unix_socket_broker(&policy.network_access.unix_socket_access)
+        let unrestricted_network = policy.network_access.is_unrestricted();
+
+        if !unrestricted_network
+            && (policy.network_access.local_tcp_bind
+                || !policy.network_access.connect_tcp_ports.is_empty()
+                || seccomp::needs_unix_socket_broker(&policy.network_access.unix_socket_access))
         {
             let status = seccomp::run_network_broker(policy, command, args)?;
             process::exit(status);
         }
 
         enforce_access_policy(policy)?;
-        {
+
+        if !unrestricted_network {
             let filter = seccomp::network_filter(NetworkFilter {
                 notify_bind: false,
                 notify_connect: false,
