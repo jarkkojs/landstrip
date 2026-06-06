@@ -43,12 +43,14 @@ pub(crate) fn execute(
             notify_connect: false,
             unix_sockets: seccomp::unix_socket_filter(&network.unix_socket_access),
         })?;
-        filter.load().map_err(Error::Seccomp)?;
+        filter
+            .load()
+            .map_err(|error| Error::BackendSetup(error.to_string()))?;
     }
     close_inherited_fds();
     let error = Command::new(command).args(args).exec();
     Err(Error::Exec {
         command: command.to_os_string(),
-        source: error,
+        error,
     })
 }

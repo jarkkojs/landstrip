@@ -33,15 +33,18 @@ pub(super) fn enforce_access_policy(policy: &AccessPolicy) -> Result<()> {
         network_access |= AccessNet::BindTcp;
     }
 
-    let ruleset = Ruleset::default().handle_access(handled_access)?;
+    let ruleset = Ruleset::default()
+        .handle_access(handled_access)
+        .map_err(|error| Error::BackendSetup(error.to_string()))?;
     let mut ruleset = if network_access.is_empty() {
         ruleset
     } else {
         ruleset
             .handle_access(network_access)
-            .map_err(Error::LandlockRuleset)?
+            .map_err(|error| Error::BackendSetup(error.to_string()))?
     }
-    .create()?;
+    .create()
+    .map_err(|error| Error::BackendSetup(error.to_string()))?;
 
     ruleset = add_path_rules(ruleset, &policy.write_roots, write_access, "write")?;
 
@@ -51,12 +54,18 @@ pub(super) fn enforce_access_policy(policy: &AccessPolicy) -> Result<()> {
 
     ruleset = add_network_rules(ruleset, policy)?;
 
-    let status = ruleset.restrict_self()?;
+    let status = ruleset
+        .restrict_self()
+        .map_err(|error| Error::BackendSetup(error.to_string()))?;
 
     match status.ruleset {
         RulesetStatus::FullyEnforced => Ok(()),
-        RulesetStatus::PartiallyEnforced => Err(Error::LandlockPartial),
-        RulesetStatus::NotEnforced => Err(Error::LandlockNone),
+        RulesetStatus::PartiallyEnforced => Err(Error::BackendUnavailable(
+            "sandbox ruleset partially enforced".to_owned(),
+        )),
+        RulesetStatus::NotEnforced => Err(Error::BackendUnavailable(
+            "sandbox ruleset not enforced".to_owned(),
+        )),
     }
 }
 
@@ -67,14 +76,16 @@ fn add_path_rules(
     _label: &str,
 ) -> Result<RulesetCreated> {
     for path in paths {
-        let fd = PathFd::new(path)?;
+        let fd = PathFd::new(path).map_err(|error| Error::BackendSetup(error.to_string()))?;
         let path_access = if path.is_dir() {
             access
         } else {
             access & AccessFs::from_file(ABI::V7)
         };
         let rule = PathBeneath::new(fd, path_access);
-        ruleset = ruleset.add_rule(rule)?;
+        ruleset = ruleset
+            .add_rule(rule)
+            .map_err(|error| Error::BackendSetup(error.to_string()))?;
     }
 
     Ok(ruleset)
@@ -87,7 +98,9 @@ fn add_network_rules(mut ruleset: RulesetCreated, policy: &AccessPolicy) -> Resu
 
     for port in &policy.network_access.connect_tcp_ports {
         let rule = NetPort::new(*port, AccessNet::ConnectTcp);
-        ruleset = ruleset.add_rule(rule)?;
+        ruleset = ruleset
+            .add_rule(rule)
+            .map_err(|error| Error::BackendSetup(error.to_string()))?;
     }
 
     Ok(ruleset)

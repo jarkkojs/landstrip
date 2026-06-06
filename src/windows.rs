@@ -60,7 +60,7 @@ pub(crate) fn execute(
 
 fn reject_unsupported_policy(policy: &AccessPolicy) -> Result<()> {
     if matches!(policy.read_access, ReadAccess::Unrestricted) {
-        return Err(Error::WindowsUnsupportedPolicy(
+        return Err(Error::UnsupportedPolicy(
             "read access must use explicit allow roots",
         ));
     }
@@ -68,20 +68,20 @@ fn reject_unsupported_policy(policy: &AccessPolicy) -> Result<()> {
     let network = &policy.network_access;
 
     if network.is_unrestricted() {
-        return Err(Error::WindowsUnsupportedPolicy(
+        return Err(Error::UnsupportedPolicy(
             "unrestricted network is not supported yet",
         ));
     }
 
     if network.local_tcp_bind || !network.connect_tcp_ports.is_empty() {
-        return Err(Error::WindowsUnsupportedPolicy(
+        return Err(Error::UnsupportedPolicy(
             "TCP policies are not supported yet",
         ));
     }
 
     if !matches!(&network.unix_socket_access, UnixSocketAccess::AllowPaths(paths) if paths.is_empty())
     {
-        return Err(Error::WindowsUnsupportedPolicy(
+        return Err(Error::UnsupportedPolicy(
             "Unix socket policies are not supported",
         ));
     }
@@ -123,16 +123,14 @@ impl AppContainerProfile {
         }
 
         if hresult_value(hr) & 0xffff != ERROR_ALREADY_EXISTS {
-            return Err(Error::WindowsApi {
-                function: "CreateAppContainerProfile",
+            return Err(Error::BackendCall {
                 code: hresult_value(hr),
             });
         }
 
         let hr = unsafe { DeriveAppContainerSidFromAppContainerName(moniker.as_ptr(), &mut sid) };
         if hr != 0 {
-            return Err(Error::WindowsApi {
-                function: "DeriveAppContainerSidFromAppContainerName",
+            return Err(Error::BackendCall {
                 code: hresult_value(hr),
             });
         }
@@ -195,10 +193,7 @@ fn grant_path_access(path: &Path, sid: PSID, access: u32) -> Result<()> {
         )
     };
     if status != 0 {
-        return Err(Error::WindowsApi {
-            function: "GetNamedSecurityInfoW",
-            code: status,
-        });
+        return Err(Error::BackendCall { code: status });
     }
 
     let explicit_access = EXPLICIT_ACCESS_W {
@@ -218,10 +213,7 @@ fn grant_path_access(path: &Path, sid: PSID, access: u32) -> Result<()> {
     let status = unsafe { SetEntriesInAclW(1, &explicit_access, old_dacl, &mut new_dacl) };
     if status != 0 {
         unsafe { LocalFree(security_descriptor) };
-        return Err(Error::WindowsApi {
-            function: "SetEntriesInAclW",
-            code: status,
-        });
+        return Err(Error::BackendCall { code: status });
     }
 
     let status = unsafe {
@@ -242,10 +234,7 @@ fn grant_path_access(path: &Path, sid: PSID, access: u32) -> Result<()> {
     }
 
     if status != 0 {
-        return Err(Error::WindowsApi {
-            function: "SetNamedSecurityInfoW",
-            code: status,
-        });
+        return Err(Error::BackendCall { code: status });
     }
 
     Ok(())
@@ -272,14 +261,12 @@ fn create_process_in_appcontainer(sid: PSID, command: &OsStr, args: &[OsString])
         PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
         (&raw mut capabilities).cast(),
         mem::size_of::<SECURITY_CAPABILITIES>(),
-        "UpdateProcThreadAttribute(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES)",
     )?;
     update_attribute(
         attribute_list.as_mut_ptr(),
         PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY as usize,
         (&raw mut all_packages_policy).cast(),
         mem::size_of::<u32>(),
-        "UpdateProcThreadAttribute(PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY)",
     )?;
 
     startup_info.lpAttributeList = attribute_list.as_mut_ptr();
@@ -300,20 +287,20 @@ fn create_process_in_appcontainer(sid: PSID, command: &OsStr, args: &[OsString])
     };
 
     if created == 0 {
-        return Err(last_error("CreateProcessW"));
+        return Err(last_error());
     }
 
     let process = Handle(process_info.hProcess);
     let thread = Handle(process_info.hThread);
     let wait = unsafe { WaitForSingleObject(process.0, INFINITE) };
     if wait == WAIT_FAILED {
-        return Err(last_error("WaitForSingleObject"));
+        return Err(last_error());
     }
 
     let mut exit_code = 0;
     let ok = unsafe { GetExitCodeProcess(process.0, &mut exit_code) };
     if ok == 0 {
-        return Err(last_error("GetExitCodeProcess"));
+        return Err(last_error());
     }
 
     drop(thread);
@@ -326,7 +313,6 @@ fn update_attribute(
     attribute: usize,
     value: *mut c_void,
     size: usize,
-    function: &'static str,
 ) -> Result<()> {
     let ok = unsafe {
         UpdateProcThreadAttribute(
@@ -340,7 +326,7 @@ fn update_attribute(
         )
     };
     if ok == 0 {
-        return Err(last_error(function));
+        return Err(last_error());
     }
     Ok(())
 }
@@ -354,14 +340,14 @@ impl ProcThreadAttributeList {
         let mut size = 0;
         let ok = unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), count, 0, &mut size) };
         if ok != 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
-            return Err(last_error("InitializeProcThreadAttributeList(size)"));
+            return Err(last_error());
         }
 
         let mut storage = vec![0_u8; size];
         let list = storage.as_mut_ptr().cast();
         let ok = unsafe { InitializeProcThreadAttributeList(list, count, 0, &mut size) };
         if ok == 0 {
-            return Err(last_error("InitializeProcThreadAttributeList"));
+            return Err(last_error());
         }
 
         Ok(Self { storage })
@@ -400,7 +386,9 @@ fn command_line(command: &OsStr, args: &[OsString]) -> Result<String> {
 fn quote_command_arg(arg: &OsStr) -> Result<String> {
     let arg = arg.to_string_lossy();
     if arg.contains('\0') {
-        return Err(Error::WindowsCommandLine);
+        return Err(Error::InvalidCommand(
+            "command line contains an interior NUL byte",
+        ));
     }
 
     if arg.is_empty() {
@@ -443,9 +431,8 @@ fn wide_string(value: &str) -> Vec<u16> {
         .collect()
 }
 
-fn last_error(function: &'static str) -> Error {
-    Error::WindowsApi {
-        function,
+fn last_error() -> Error {
+    Error::BackendCall {
         code: unsafe { GetLastError() },
     }
 }

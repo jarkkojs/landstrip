@@ -56,14 +56,12 @@ pub(super) fn run_network_broker(
     args: &[OsString],
 ) -> Result<i32> {
     let api_level = seccomp_api_level();
-    let version = ScmpVersion::current()?;
+    let version = ScmpVersion::current().map_err(|error| Error::BackendSetup(error.to_string()))?;
 
     if api_level < NOTIFY_API {
-        return Err(Error::NotSupportedNotifyApi {
-            required: NOTIFY_API,
-            current: api_level,
-            version: version.to_string(),
-        });
+        return Err(Error::BackendUnavailable(format!(
+            "seccomp notify API {version} is too old: required {NOTIFY_API}, current {api_level}"
+        )));
     }
 
     let notify_unix_sockets = needs_unix_socket_broker(&policy.network_access.unix_socket_access);
@@ -79,7 +77,9 @@ pub(super) fn run_network_broker(
     let (parent, child_sock) = UnixStream::pair()?;
 
     // SAFETY: landstrip forks before spawning threads; the child either execs the target or exits.
-    match unsafe { fork() }? {
+    match unsafe { fork() }.map_err(|error| Error::SystemCall {
+        errno: error as i32,
+    })? {
         ForkResult::Child => {
             drop(parent);
 
@@ -93,12 +93,21 @@ pub(super) fn run_network_broker(
                         notify_connect,
                         unix_sockets,
                     })?;
-                    filter.load()?;
-                    let notify = filter.get_notify_fd()?;
+                    filter
+                        .load()
+                        .map_err(|error| Error::BackendSetup(error.to_string()))?;
+                    let notify = filter
+                        .get_notify_fd()
+                        .map_err(|error| Error::BackendSetup(error.to_string()))?;
 
                     // SAFETY: notify is borrowed only for the duration of fcntl(2).
                     let notify_fd = unsafe { BorrowedFd::borrow_raw(notify) };
-                    let notify = fcntl(notify_fd, FcntlArg::F_DUPFD_CLOEXEC(0))?;
+                    let notify =
+                        fcntl(notify_fd, FcntlArg::F_DUPFD_CLOEXEC(0)).map_err(|error| {
+                            Error::SystemCall {
+                                errno: error as i32,
+                            }
+                        })?;
                     // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
                     let notify = unsafe { OwnedFd::from_raw_fd(notify) };
 
@@ -112,7 +121,7 @@ pub(super) fn run_network_broker(
                 let error = child_command.exec();
                 Err(Error::Exec {
                     command: command.to_os_string(),
-                    source: error,
+                    error,
                 })
             })();
 
@@ -146,7 +155,11 @@ fn supervise_child(
                 Ok(WaitStatus::StillAlive) => break,
                 Ok(status) => return Ok(ExitCode::from(status).into()),
                 Err(Errno::EINTR) => continue,
-                Err(source) => return Err(Error::Nix(source)),
+                Err(error) => {
+                    return Err(Error::SystemCall {
+                        errno: error as i32,
+                    });
+                }
             }
         }
 
@@ -158,7 +171,11 @@ fn supervise_child(
                 Ok(0) => break PollFlags::empty(),
                 Ok(_) => break poll_fd[0].revents().unwrap_or_else(PollFlags::empty),
                 Err(Errno::EINTR) => continue,
-                Err(source) => return Err(Error::Nix(source)),
+                Err(error) => {
+                    return Err(Error::SystemCall {
+                        errno: error as i32,
+                    });
+                }
             }
         };
 
@@ -171,26 +188,36 @@ fn supervise_child(
                 match waitpid(child, None) {
                     Ok(status) => return Ok(ExitCode::from(status).into()),
                     Err(Errno::EINTR) => continue,
-                    Err(source) => return Err(Error::Nix(source)),
+                    Err(error) => {
+                        return Err(Error::SystemCall {
+                            errno: error as i32,
+                        });
+                    }
                 }
             }
         }
 
-        let request = ScmpNotifReq::receive(notify_fd)?;
+        let request = ScmpNotifReq::receive(notify_fd)
+            .map_err(|error| Error::BackendSetup(error.to_string()))?;
         let response = handle_notification(policy, &request, syscalls);
 
-        notify_id_valid(notify_fd, request.id)?;
+        notify_id_valid(notify_fd, request.id)
+            .map_err(|error| Error::BackendSetup(error.to_string()))?;
         if let Err(source) = response.respond(notify_fd) {
             loop {
                 match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
                     Ok(WaitStatus::StillAlive) => break,
                     Ok(status) => return Ok(ExitCode::from(status).into()),
                     Err(Errno::EINTR) => continue,
-                    Err(wait_error) => return Err(Error::Nix(wait_error)),
+                    Err(error) => {
+                        return Err(Error::SystemCall {
+                            errno: error as i32,
+                        });
+                    }
                 }
             }
 
-            return Err(Error::Seccomp(source));
+            return Err(Error::BackendSetup(source.to_string()));
         }
     }
 }
@@ -230,7 +257,7 @@ fn notification_errno(error: &Error) -> i32 {
         Error::BadFileDescriptor => libc::EBADF,
         Error::BadAddress => libc::EFAULT,
         Error::NameTooLong => libc::ENAMETOOLONG,
-        Error::Nix(errno) => *errno as i32,
+        Error::SystemCall { errno } => *errno,
         Error::PeerClosed => libc::ECONNRESET,
         Error::MissingFileDescriptor => libc::EBADMSG,
         _ => libc::EIO,
@@ -444,7 +471,10 @@ fn read_target_addr(pid: Pid, target_addr: usize, addr_len: usize) -> SysResult<
         base: target_addr,
         len: addr_len,
     }];
-    if process_vm_readv(pid, &mut local, &target).map_err(Error::Nix)? != addr_len {
+    if process_vm_readv(pid, &mut local, &target).map_err(|error| Error::SystemCall {
+        errno: error as i32,
+    })? != addr_len
+    {
         return Err(Error::BadAddress);
     }
 
@@ -455,7 +485,9 @@ fn duplicate_target_fd(pid: Pid, fd: RawFd) -> SysResult<OwnedFd> {
     // SAFETY: pidfd_open copies scalar arguments and returns a new fd on success.
     let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), 0) };
     if pidfd < 0 {
-        return Err(Error::Nix(Errno::last()));
+        return Err(Error::SystemCall {
+            errno: Errno::last() as i32,
+        });
     }
     // SAFETY: pidfd_open returned a new owned descriptor.
     let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd as RawFd) };
@@ -463,7 +495,9 @@ fn duplicate_target_fd(pid: Pid, fd: RawFd) -> SysResult<OwnedFd> {
     // SAFETY: pidfd_getfd copies scalar arguments and returns a duplicated fd.
     let sock = unsafe { libc::syscall(libc::SYS_pidfd_getfd, pidfd.as_raw_fd(), fd, 0) };
     if sock < 0 {
-        return Err(Error::Nix(Errno::last()));
+        return Err(Error::SystemCall {
+            errno: Errno::last() as i32,
+        });
     }
 
     // SAFETY: pidfd_getfd returned a new owned descriptor.
@@ -492,7 +526,9 @@ fn broker_addr_call(sock: RawFd, addr: &[u8], call: SocketAddrCall) -> SysResult
         )
     };
     if rc < 0 {
-        Err(Error::Nix(Errno::last()))
+        Err(Error::SystemCall {
+            errno: Errno::last() as i32,
+        })
     } else {
         Ok(i64::from(rc))
     }
@@ -500,7 +536,8 @@ fn broker_addr_call(sock: RawFd, addr: &[u8], call: SocketAddrCall) -> SysResult
 
 pub(super) fn network_filter(config: NetworkFilter) -> Result<ScmpFilterContext> {
     let syscalls = NotificationSyscalls::new()?;
-    let mut filter = ScmpFilterContext::new(ScmpAction::Allow).map_err(Error::Seccomp)?;
+    let mut filter = ScmpFilterContext::new(ScmpAction::Allow)
+        .map_err(|error| Error::BackendSetup(error.to_string()))?;
 
     add_socket_family_filter(&mut filter, syscalls.socket)?;
     add_unix_socket_filters(
@@ -513,13 +550,13 @@ pub(super) fn network_filter(config: NetworkFilter) -> Result<ScmpFilterContext>
     if config.notify_bind {
         filter
             .add_rule(ScmpAction::Notify, syscalls.bind)
-            .map_err(Error::Seccomp)?;
+            .map_err(|error| Error::BackendSetup(error.to_string()))?;
     }
 
     if config.notify_connect {
         filter
             .add_rule(ScmpAction::Notify, syscalls.connect)
-            .map_err(Error::Seccomp)?;
+            .map_err(|error| Error::BackendSetup(error.to_string()))?;
     }
 
     Ok(filter)
@@ -592,7 +629,7 @@ fn add_socket_family_filter(filter: &mut ScmpFilterContext, socket: ScmpSyscall)
                         ScmpArgCompare::new(1, ScmpCompareOp::MaskedEqual(SOCK_TYPE_MASK), ty),
                     ],
                 )
-                .map_err(Error::Seccomp)?;
+                .map_err(|error| Error::BackendSetup(error.to_string()))?;
         }
 
         for proto in 1..tcp {
@@ -606,7 +643,7 @@ fn add_socket_family_filter(filter: &mut ScmpFilterContext, socket: ScmpSyscall)
                         ScmpArgCompare::new(2, ScmpCompareOp::Equal, proto),
                     ],
                 )
-                .map_err(Error::Seccomp)?;
+                .map_err(|error| Error::BackendSetup(error.to_string()))?;
         }
 
         filter
@@ -619,7 +656,7 @@ fn add_socket_family_filter(filter: &mut ScmpFilterContext, socket: ScmpSyscall)
                     ScmpArgCompare::new(2, ScmpCompareOp::Greater, tcp),
                 ],
             )
-            .map_err(Error::Seccomp)?;
+            .map_err(|error| Error::BackendSetup(error.to_string()))?;
     }
 
     for domain in [libc::AF_PACKET, libc::AF_NETLINK] {
@@ -643,7 +680,7 @@ fn add_socket_domain_filter(
             &[ScmpArgCompare::new(0, ScmpCompareOp::Equal, domain)],
         )
         .map(|_| ())
-        .map_err(Error::Seccomp)
+        .map_err(|error| Error::BackendSetup(error.to_string()))
 }
 
 fn create_path(path: &Path) -> PathBuf {
@@ -673,7 +710,9 @@ fn sockopt(fd: RawFd, level: libc::c_int, name: libc::c_int) -> SysResult<i32> {
         )
     };
     if rc < 0 {
-        Err(Error::Nix(Errno::last()))
+        Err(Error::SystemCall {
+            errno: Errno::last() as i32,
+        })
     } else {
         Ok(value)
     }
@@ -692,7 +731,9 @@ fn send_fd(socket: &UnixStream, fd: RawFd) -> Result<()> {
         None,
     )
     .map(|_| ())
-    .map_err(Error::Nix)
+    .map_err(|error| Error::SystemCall {
+        errno: error as i32,
+    })
 }
 
 fn recv_fd(socket: &UnixStream) -> Result<OwnedFd> {
@@ -705,13 +746,17 @@ fn recv_fd(socket: &UnixStream) -> Result<OwnedFd> {
         Some(&mut control),
         MsgFlags::empty(),
     )
-    .map_err(Error::Nix)?;
+    .map_err(|error| Error::SystemCall {
+        errno: error as i32,
+    })?;
 
     if message.bytes == 0 {
         return Err(Error::PeerClosed);
     }
 
-    for control in message.cmsgs().map_err(Error::Nix)? {
+    for control in message.cmsgs().map_err(|error| Error::SystemCall {
+        errno: error as i32,
+    })? {
         if let ControlMessageOwned::ScmRights(fds) = control {
             let Some(fd) = fds.first().copied() else {
                 continue;
@@ -800,10 +845,14 @@ struct NotificationSyscalls {
 impl NotificationSyscalls {
     fn new() -> Result<Self> {
         Ok(Self {
-            bind: ScmpSyscall::from_name("bind").map_err(Error::Seccomp)?,
-            connect: ScmpSyscall::from_name("connect").map_err(Error::Seccomp)?,
-            socket: ScmpSyscall::from_name("socket").map_err(Error::Seccomp)?,
-            socketpair: ScmpSyscall::from_name("socketpair").map_err(Error::Seccomp)?,
+            bind: ScmpSyscall::from_name("bind")
+                .map_err(|error| Error::BackendSetup(error.to_string()))?,
+            connect: ScmpSyscall::from_name("connect")
+                .map_err(|error| Error::BackendSetup(error.to_string()))?,
+            socket: ScmpSyscall::from_name("socket")
+                .map_err(|error| Error::BackendSetup(error.to_string()))?,
+            socketpair: ScmpSyscall::from_name("socketpair")
+                .map_err(|error| Error::BackendSetup(error.to_string()))?,
         })
     }
 }

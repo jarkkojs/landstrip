@@ -25,7 +25,7 @@ pub(crate) fn execute(
     let error = Command::new(command).args(args).exec();
     Err(Error::Exec {
         command: command.to_os_string(),
-        source: error,
+        error,
     })
 }
 
@@ -39,7 +39,7 @@ impl Seatbelt for SystemSeatbelt {
     fn apply_profile(profile: &str) -> Result<()> {
         let profile = CString::new(profile).map_err(|source| {
             let nul_position = source.nul_position();
-            Error::SeatbeltInit(format!(
+            Error::BackendSetup(format!(
                 "generated SBPL profile contains an interior NUL byte at offset {nul_position}"
             ))
         })?;
@@ -51,7 +51,7 @@ impl Seatbelt for SystemSeatbelt {
         if rc == 0 {
             Ok(())
         } else {
-            Err(Error::SeatbeltInit(take_sandbox_error(errorbuf)))
+            Err(Error::BackendSetup(take_sandbox_error(errorbuf)))
         }
     }
 }

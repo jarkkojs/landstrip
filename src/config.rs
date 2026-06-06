@@ -49,12 +49,12 @@ pub(crate) fn load_settings(policy_paths: &[PathBuf]) -> Result<Settings> {
 
             let json = fs::read_to_string(path).map_err(|source| Error::PolicyFile {
                 path: path.clone(),
-                source,
+                error: source,
             })?;
             let value: Value =
                 serde_json::from_str(&json).map_err(|source| Error::PolicyFileJson {
                     path: path.clone(),
-                    source,
+                    error: source,
                 })?;
             merge_json(&mut merged, value);
         }
