@@ -37,6 +37,27 @@ On Linux and macOS, `allowNetwork` disables landstrip network enforcement while
 leaving filesystem policy enforcement in place. Windows rejects unrestricted
 network policies until Windows network support exists.
 
+## Development
+
+### Commit messages
+
+- **`<subsystem>: <message>`**
+- Long description for non-trivial changes.
+- Kernel style commit messages.
+- **`Signed-off-by`**
+
+### Documenting errors
+
+The following snippet demonstrates the recommended pattern for documenting
+the return values on error:
+
+```
+/// # Errors
+///
+/// Returns [`<variant's unqualified name>`](<variant's unqualified name>)
+/// Returns ...
+```
+
 ## Licensing
 
 `landstrip` is licensed under `LGPL-2.1-or-later`.
