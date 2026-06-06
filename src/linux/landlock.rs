@@ -15,7 +15,7 @@ use landlock::{
 };
 use std::path::PathBuf;
 
-pub(crate) fn enforce_access_policy(policy: &AccessPolicy) -> Result<()> {
+pub(super) fn enforce_access_policy(policy: &AccessPolicy) -> Result<()> {
     let write_access = AccessFs::from_write(ABI::V7);
     let read_access = AccessFs::ReadFile | AccessFs::ReadDir;
     let handled_access = match &policy.read_access {

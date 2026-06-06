@@ -4,7 +4,7 @@
 #![deny(clippy::all)]
 #![deny(clippy::pedantic)]
 
-#[cfg_attr(target_os = "linux", path = "linux.rs")]
+#[cfg_attr(target_os = "linux", path = "linux/mod.rs")]
 #[cfg_attr(target_os = "macos", path = "macos.rs")]
 #[cfg_attr(target_os = "windows", path = "windows.rs")]
 #[cfg_attr(
@@ -15,14 +15,8 @@ mod backend;
 mod cli;
 mod config;
 mod error;
-#[cfg(target_os = "linux")]
-mod fd;
-#[cfg(target_os = "linux")]
-mod landlock;
 mod paths;
 mod policy;
-#[cfg(target_os = "linux")]
-mod seccomp;
 mod traversal;
 
 use crate::cli::parse_cli;

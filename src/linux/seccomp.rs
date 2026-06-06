@@ -12,9 +12,9 @@
 //! not path-mediated. `allowAllUnixSockets` permits new Unix sockets without
 //! path checks.
 
+use super::fd::close_inherited_fds;
+use super::landlock::enforce_access_policy;
 use crate::error::{Error, Result};
-use crate::fd::close_inherited_fds;
-use crate::landlock::enforce_access_policy;
 use crate::paths::normalize_path;
 use crate::policy::{AccessPolicy, UnixSocketAccess};
 use libseccomp::{
@@ -50,7 +50,7 @@ type SocketAddrCall =
     unsafe extern "C" fn(libc::c_int, *const libc::sockaddr, libc::socklen_t) -> libc::c_int;
 
 #[allow(clippy::too_many_lines)]
-pub(crate) fn run_network_broker(
+pub(super) fn run_network_broker(
     policy: &AccessPolicy,
     command: &OsStr,
     args: &[OsString],
@@ -498,7 +498,7 @@ fn broker_addr_call(sock: RawFd, addr: &[u8], call: SocketAddrCall) -> SysResult
     }
 }
 
-pub(crate) fn network_filter(config: NetworkFilter) -> Result<ScmpFilterContext> {
+pub(super) fn network_filter(config: NetworkFilter) -> Result<ScmpFilterContext> {
     let syscalls = NotificationSyscalls::new()?;
     let mut filter = ScmpFilterContext::new(ScmpAction::Allow).map_err(Error::Seccomp)?;
 
@@ -545,11 +545,11 @@ fn add_unix_socket_filters(
     Ok(())
 }
 
-pub(crate) fn needs_unix_socket_broker(access: &UnixSocketAccess) -> bool {
+pub(super) fn needs_unix_socket_broker(access: &UnixSocketAccess) -> bool {
     matches!(access, UnixSocketAccess::AllowPaths(paths) if !paths.is_empty())
 }
 
-pub(crate) fn unix_socket_filter(access: &UnixSocketAccess) -> UnixSocketFilter {
+pub(super) fn unix_socket_filter(access: &UnixSocketAccess) -> UnixSocketFilter {
     match access {
         UnixSocketAccess::Unrestricted => UnixSocketFilter::Unrestricted,
         UnixSocketAccess::AllowPaths(paths) if paths.is_empty() => UnixSocketFilter::DenyAll,
@@ -558,14 +558,14 @@ pub(crate) fn unix_socket_filter(access: &UnixSocketAccess) -> UnixSocketFilter 
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct NetworkFilter {
-    pub(crate) notify_bind: bool,
-    pub(crate) notify_connect: bool,
-    pub(crate) unix_sockets: UnixSocketFilter,
+pub(super) struct NetworkFilter {
+    pub(super) notify_bind: bool,
+    pub(super) notify_connect: bool,
+    pub(super) unix_sockets: UnixSocketFilter,
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum UnixSocketFilter {
+pub(super) enum UnixSocketFilter {
     Unrestricted,
     PathMediated,
     DenyAll,

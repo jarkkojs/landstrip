@@ -3,11 +3,15 @@
 
 //! Linux sandbox backend using Landlock and seccomp.
 
+mod fd;
+mod landlock;
+mod seccomp;
+
 use crate::error::{Error, Result};
-use crate::fd::close_inherited_fds;
-use crate::landlock::enforce_access_policy;
 use crate::policy::AccessPolicy;
-use crate::seccomp::{self, NetworkFilter};
+use fd::close_inherited_fds;
+use landlock::enforce_access_policy;
+use seccomp::NetworkFilter;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
