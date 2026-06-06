@@ -10,9 +10,10 @@
 use crate::error::{Error, Result};
 use crate::policy::{AccessPolicy, ReadAccess};
 use landlock::{
-    ABI, AccessFs, AccessNet, BitFlags, NetPort, PathBeneath, PathFd, Ruleset, RulesetAttr,
-    RulesetCreated, RulesetCreatedAttr, RulesetStatus,
+    ABI, AccessFs, AccessNet, BitFlags, NetPort, PathBeneath, PathFd, PathFdError, Ruleset,
+    RulesetAttr, RulesetCreated, RulesetCreatedAttr, RulesetStatus,
 };
+use std::io;
 use std::path::PathBuf;
 
 pub(super) fn enforce_access_policy(policy: &AccessPolicy) -> Result<()> {
@@ -73,10 +74,19 @@ fn add_path_rules(
     mut ruleset: RulesetCreated,
     paths: &[PathBuf],
     access: BitFlags<AccessFs>,
-    _label: &str,
+    label: &str,
 ) -> Result<RulesetCreated> {
     for path in paths {
-        let fd = PathFd::new(path).map_err(|error| Error::BackendSetup(error.to_string()))?;
+        let fd = match PathFd::new(path) {
+            Ok(fd) => fd,
+            Err(PathFdError::OpenCall { source, .. })
+                if source.kind() == io::ErrorKind::NotFound =>
+            {
+                log::debug!("policy: {label} path {} missing, skipping", path.display());
+                continue;
+            }
+            Err(error) => return Err(Error::BackendSetup(error.to_string())),
+        };
         let path_access = if path.is_dir() {
             access
         } else {
