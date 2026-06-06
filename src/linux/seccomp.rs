@@ -126,7 +126,7 @@ pub(super) fn run_network_broker(
             })();
 
             if let Err(error) = result {
-                eprintln!("landstrip child setup failed: {error:?}");
+                log::error!("landstrip child setup failed: {error}");
             }
 
             // SAFETY: _exit terminates the child without running duplicated parent cleanup.
