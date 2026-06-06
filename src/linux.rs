@@ -23,12 +23,13 @@ impl Backend for LinuxBackend {
         command: &OsStr,
         args: &[OsString],
     ) -> Result<()> {
-        let unrestricted_network = policy.network_access.is_unrestricted();
+        let network = &policy.network_access;
+        let unrestricted_network = network.is_unrestricted();
 
         if !unrestricted_network
-            && (policy.network_access.local_tcp_bind
-                || !policy.network_access.connect_tcp_ports.is_empty()
-                || seccomp::needs_unix_socket_broker(&policy.network_access.unix_socket_access))
+            && (network.local_tcp_bind
+                || !network.connect_tcp_ports.is_empty()
+                || seccomp::needs_unix_socket_broker(&network.unix_socket_access))
         {
             let status = seccomp::run_network_broker(policy, command, args)?;
             process::exit(status);
@@ -40,9 +41,7 @@ impl Backend for LinuxBackend {
             let filter = seccomp::network_filter(NetworkFilter {
                 notify_bind: false,
                 notify_connect: false,
-                unix_sockets: seccomp::unix_socket_filter(
-                    &policy.network_access.unix_socket_access,
-                ),
+                unix_sockets: seccomp::unix_socket_filter(&network.unix_socket_access),
             })?;
             filter.load().map_err(Error::Seccomp)?;
         }

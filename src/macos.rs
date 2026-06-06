@@ -128,7 +128,7 @@ fn render_network_rules(sb: &mut String, network: &NetworkAccess) {
     // Unix sockets.
     match &network.unix_socket_access {
         UnixSocketAccess::Unrestricted => {
-            // No restrictions — network* is allowed by absence of deny rules.
+            // No additional Unix socket rules.
         }
         UnixSocketAccess::AllowPaths(paths) if paths.is_empty() => {
             sb.push_str("(deny network*)\n");

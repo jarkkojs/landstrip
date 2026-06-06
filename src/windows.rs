@@ -71,19 +71,21 @@ fn reject_unsupported_policy(policy: &AccessPolicy) -> Result<()> {
         ));
     }
 
-    if policy.network_access.is_unrestricted() {
+    let network = &policy.network_access;
+
+    if network.is_unrestricted() {
         return Err(Error::WindowsUnsupportedPolicy(
             "unrestricted network is not supported yet",
         ));
     }
 
-    if policy.network_access.local_tcp_bind || !policy.network_access.connect_tcp_ports.is_empty() {
+    if network.local_tcp_bind || !network.connect_tcp_ports.is_empty() {
         return Err(Error::WindowsUnsupportedPolicy(
             "TCP policies are not supported yet",
         ));
     }
 
-    if !matches!(policy.network_access.unix_socket_access, UnixSocketAccess::AllowPaths(ref paths) if paths.is_empty())
+    if !matches!(&network.unix_socket_access, UnixSocketAccess::AllowPaths(paths) if paths.is_empty())
     {
         return Err(Error::WindowsUnsupportedPolicy(
             "Unix socket policies are not supported",
