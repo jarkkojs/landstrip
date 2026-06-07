@@ -186,7 +186,7 @@ fn resolve_sandbox_path(path: &str, base: &Path, home: Option<&Path>) -> Result<
     }
 
     let raw = Path::new(path);
-    let resolved = if raw.is_absolute() {
+    let resolved = if raw.has_root() {
         raw.to_path_buf()
     } else if path == "~" {
         home.map(Path::to_path_buf)
