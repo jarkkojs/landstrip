@@ -31,10 +31,8 @@ fn main() {
             eprintln!("{error}");
             process::exit(2);
         }
+        let _ = print_error_response(&error);
 
-        if let Err(error) = print_error_response(&error) {
-            eprintln!("failed to serialize error response: {error}");
-        }
         process::exit(1);
     }
 }
