@@ -45,6 +45,7 @@ use std::ptr;
 const POLL_MS: u16 = 100;
 const SOCK_TYPE_MASK: u64 = 0x0f;
 const SECCOMP_IOC_MAGIC: u8 = b'!';
+const USER_NOTIF_FLAG_CONTINUE: u32 = 1 << 0;
 
 nix::ioctl_readwrite!(
     seccomp_notif_recv,
@@ -262,7 +263,7 @@ fn notification_continue(id: u64) -> libc::seccomp_notif_resp {
         id,
         val: 0,
         error: 0,
-        flags: libc::SECCOMP_USER_NOTIF_FLAG_CONTINUE as u32,
+        flags: USER_NOTIF_FLAG_CONTINUE,
     }
 }
 
@@ -710,29 +711,27 @@ fn build_filter(rules: RuleMap, match_action: SeccompAction) -> Result<BpfProgra
 
 fn build_notify_filter(syscalls: &[i64]) -> Result<BpfProgram> {
     let mut program = BpfProgram::with_capacity(syscalls.len() * 2 + 2);
+    let load_syscall = bpf_code(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS)?;
+    let jump_eq = bpf_code(libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K)?;
+    let ret = bpf_code(libc::BPF_RET | libc::BPF_K)?;
 
-    program.push(bpf_stmt(
-        (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
-        0,
-    ));
+    program.push(bpf_stmt(load_syscall, 0));
     for syscall in syscalls {
         program.push(bpf_jump(
-            (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+            jump_eq,
             u32::try_from(*syscall).map_err(|_| Error::InvalidAddress)?,
             0,
             1,
         ));
-        program.push(bpf_stmt(
-            (libc::BPF_RET | libc::BPF_K) as u16,
-            libc::SECCOMP_RET_USER_NOTIF,
-        ));
+        program.push(bpf_stmt(ret, libc::SECCOMP_RET_USER_NOTIF));
     }
-    program.push(bpf_stmt(
-        (libc::BPF_RET | libc::BPF_K) as u16,
-        libc::SECCOMP_RET_ALLOW,
-    ));
+    program.push(bpf_stmt(ret, libc::SECCOMP_RET_ALLOW));
 
     Ok(program)
+}
+
+fn bpf_code(code: u32) -> Result<u16> {
+    u16::try_from(code).map_err(|_| Error::InvalidAddress)
 }
 
 fn bpf_stmt(code: u16, k: u32) -> seccompiler::sock_filter {
@@ -1092,10 +1091,10 @@ struct NotificationSyscalls {
 impl NotificationSyscalls {
     fn new() -> Self {
         Self {
-            bind: i64::from(libc::SYS_bind),
-            connect: i64::from(libc::SYS_connect),
-            socket: i64::from(libc::SYS_socket),
-            socketpair: i64::from(libc::SYS_socketpair),
+            bind: libc::SYS_bind,
+            connect: libc::SYS_connect,
+            socket: libc::SYS_socket,
+            socketpair: libc::SYS_socketpair,
         }
     }
 }
