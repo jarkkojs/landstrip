@@ -307,6 +307,7 @@ fn create_process_in_appcontainer(sid: PSID, tool: &OsStr, args: &[OsString]) ->
             message: format!("CreateProcessW failed: error {code}"),
             cause: None,
         });
+    }
 
     let process = Handle(process_info.hProcess);
     let thread = Handle(process_info.hThread);
@@ -426,6 +427,7 @@ fn command_line(tool: &OsStr, args: &[OsString]) -> Result<String> {
                 cause: None,
             })?,
         );
+    }
     Ok(parts.join(" "))
 }
 
