@@ -11,13 +11,19 @@ use std::fs;
 use std::os::fd::RawFd;
 
 const FIRST_INHERITED_FD: RawFd = 3;
+const FIRST_INHERITED_FD_U32: u32 = 3;
 const FALLBACK_FD_LIMIT: RawFd = 1_048_576;
 
 pub(super) fn close_inherited_fds() {
-    let first = u32::try_from(FIRST_INHERITED_FD).expect("fd lower bound fits u32");
-
     // SAFETY: close_range(2) copies scalar arguments and closes descriptors in this process.
-    let rc = unsafe { libc::syscall(libc::SYS_close_range, first, u32::MAX, 0_u32) };
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_close_range,
+            FIRST_INHERITED_FD_U32,
+            u32::MAX,
+            0_u32,
+        )
+    };
     if rc == 0 {
         return;
     }

@@ -6,7 +6,7 @@
 use crate::error::{Error, Result};
 use crate::policy::{AccessPolicy, NetworkAccess, ReadAccess, UnixSocketAccess};
 use std::ffi::{CStr, CString, OsStr, OsString};
-use std::fmt::Write;
+use std::fmt::{self, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,7 +20,8 @@ pub(crate) fn execute(
     command: &OsStr,
     args: &[OsString],
 ) -> Result<()> {
-    let profile = render_profile(policy, command);
+    let profile =
+        render_profile(policy, command).map_err(|error| Error::BackendSetup(error.to_string()))?;
     <SystemSeatbelt as Seatbelt>::apply_profile(&profile)?;
     let error = Command::new(command).args(args).exec();
     Err(Error::Exec {
@@ -57,54 +58,60 @@ impl Seatbelt for SystemSeatbelt {
     }
 }
 
-fn render_profile(policy: &AccessPolicy, command: &OsStr) -> String {
+fn render_profile(
+    policy: &AccessPolicy,
+    command: &OsStr,
+) -> std::result::Result<String, fmt::Error> {
     let mut sb = String::new();
-    writeln!(sb, "(version 1)").unwrap();
-    writeln!(sb, "(deny default)").unwrap();
+    writeln!(sb, "(version 1)")?;
+    writeln!(sb, "(deny default)")?;
 
-    render_process_rules(&mut sb, command);
-    render_write_rules(&mut sb, &policy.write_roots);
-    render_read_rules(&mut sb, &policy.read_access);
-    render_network_rules(&mut sb, &policy.network_access);
+    render_process_rules(&mut sb, command)?;
+    render_write_rules(&mut sb, &policy.write_roots)?;
+    render_read_rules(&mut sb, &policy.read_access)?;
+    render_network_rules(&mut sb, &policy.network_access)?;
 
-    sb
+    Ok(sb)
 }
 
-fn render_process_rules(sb: &mut String, command: &OsStr) {
+fn render_process_rules(sb: &mut String, command: &OsStr) -> fmt::Result {
     let cmd_str = command.to_string_lossy();
     writeln!(
         sb,
         "(allow process-exec (literal \"{}\"))",
         escape_sbpl_literal(&cmd_str)
-    )
-    .unwrap();
-    writeln!(sb, "(allow process-fork)").unwrap();
+    )?;
+    writeln!(sb, "(allow process-fork)")
 }
 
-fn render_write_rules(sb: &mut String, write_roots: &[PathBuf]) {
+fn render_write_rules(sb: &mut String, write_roots: &[PathBuf]) -> fmt::Result {
     for root in write_roots {
         let escaped = escape_sbpl_literal(&root.to_string_lossy());
-        writeln!(sb, "(allow file-write* (subpath \"{escaped}\"))").unwrap();
+        writeln!(sb, "(allow file-write* (subpath \"{escaped}\"))")?;
     }
+
+    Ok(())
 }
 
-fn render_read_rules(sb: &mut String, read_access: &ReadAccess) {
+fn render_read_rules(sb: &mut String, read_access: &ReadAccess) -> fmt::Result {
     match read_access {
         ReadAccess::Unrestricted => sb.push_str("(allow file-read*)\n"),
         ReadAccess::AllowRoots(roots) => {
-            writeln!(sb, "(deny file-read*)").unwrap();
+            writeln!(sb, "(deny file-read*)")?;
             for root in roots {
                 let escaped = escape_sbpl_literal(&root.to_string_lossy());
-                writeln!(sb, "(allow file-read* (subpath \"{escaped}\"))").unwrap();
+                writeln!(sb, "(allow file-read* (subpath \"{escaped}\"))")?;
             }
         }
     }
+
+    Ok(())
 }
 
-fn render_network_rules(sb: &mut String, network: &NetworkAccess) {
+fn render_network_rules(sb: &mut String, network: &NetworkAccess) -> fmt::Result {
     if network.is_unrestricted() {
         sb.push_str("(allow network*)\n");
-        return;
+        return Ok(());
     }
 
     // Outbound TCP: deny everything, then allow only proxy loopback ports.
@@ -114,8 +121,7 @@ fn render_network_rules(sb: &mut String, network: &NetworkAccess) {
             writeln!(
                 sb,
                 "(allow network-outbound (remote tcp \"localhost:{port}\"))"
-            )
-            .unwrap();
+            )?;
         }
     }
 
@@ -144,16 +150,16 @@ fn render_network_rules(sb: &mut String, network: &NetworkAccess) {
                 writeln!(
                     sb,
                     "(allow network-outbound (remote unix-socket (path-literal \"{escaped}\")))"
-                )
-                .unwrap();
+                )?;
                 writeln!(
                     sb,
                     "(allow network-bind (local unix-socket (path-literal \"{escaped}\")))"
-                )
-                .unwrap();
+                )?;
             }
         }
     }
+
+    Ok(())
 }
 
 /// Escape special characters in an SBPL literal string.

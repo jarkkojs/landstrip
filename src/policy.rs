@@ -216,10 +216,12 @@ fn expand_glob_path(pattern: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn glob_base(pattern: &str) -> PathBuf {
-    let glob_at = pattern
+    let Some(glob_at) = pattern
         .bytes()
         .position(|byte| matches!(byte, b'*' | b'?' | b'[' | b']'))
-        .expect("glob pattern contains a glob character");
+    else {
+        return PathBuf::from(pattern);
+    };
     let prefix = &pattern[..glob_at];
     let base = if prefix.ends_with('/') {
         prefix.trim_end_matches('/')

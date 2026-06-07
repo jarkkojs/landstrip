@@ -152,8 +152,13 @@ impl Drop for AppContainerProfile {
 }
 
 fn grant_policy_access(policy: &AccessPolicy, sid: PSID) -> Result<()> {
-    let ReadAccess::AllowRoots(read_roots) = &policy.read_access else {
-        unreachable!("unsupported read policy was rejected");
+    let read_roots = match &policy.read_access {
+        ReadAccess::AllowRoots(read_roots) => read_roots,
+        ReadAccess::Unrestricted => {
+            return Err(Error::UnsupportedPolicy(
+                "read access must use explicit allow roots",
+            ));
+        }
     };
 
     for path in read_roots {
@@ -244,8 +249,8 @@ fn create_process_in_appcontainer(sid: PSID, command: &OsStr, args: &[OsString])
     let command_line = command_line(command, args)?;
     let mut command_line = wide_string(&command_line);
     let mut startup_info = unsafe { mem::zeroed::<STARTUPINFOEXW>() };
-    startup_info.StartupInfo.cb =
-        u32::try_from(mem::size_of::<STARTUPINFOEXW>()).expect("STARTUPINFOEXW fits in u32");
+    startup_info.StartupInfo.cb = u32::try_from(mem::size_of::<STARTUPINFOEXW>())
+        .map_err(|_| Error::BackendSetup("startup info size exceeds u32".into()))?;
 
     let mut attribute_list = ProcThreadAttributeList::new(2)?;
     let mut capabilities = SECURITY_CAPABILITIES {
