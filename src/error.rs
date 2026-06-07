@@ -17,17 +17,13 @@ pub(crate) enum Error {
     Usage(String),
     Policy {
         source: PolicySource,
-        target: PolicyTarget,
+        r#type: PolicyType,
         message: String,
         cause: Option<Cause>,
     },
-    ToolLaunch {
+    Tool {
         program: Option<OsString>,
-        message: String,
-        cause: Option<Cause>,
-    },
-    ToolEncoding {
-        program: Option<OsString>,
+        r#type: ToolType,
         message: String,
         cause: Option<Cause>,
     },
@@ -47,10 +43,16 @@ pub(crate) enum PolicySource {
 }
 
 #[derive(Debug)]
-pub(crate) enum PolicyTarget {
+pub(crate) enum PolicyType {
     Filesystem,
     Network,
     Platform,
+}
+
+#[derive(Debug)]
+pub(crate) enum ToolType {
+    Launch,
+    Encoding,
 }
 
 impl Error {
@@ -59,7 +61,7 @@ impl Error {
             Self::Usage(_) => None,
             Self::Policy {
                 source,
-                target,
+                r#type,
                 message,
                 ..
             } => Some(Response {
@@ -69,74 +71,64 @@ impl Error {
                     PolicySource::Stdin => None,
                 },
                 program: None,
-                target: Some(match target {
-                    PolicyTarget::Filesystem => "filesystem",
-                    PolicyTarget::Network => "network",
-                    PolicyTarget::Platform => "platform",
+                r#type: Some(match r#type {
+                    PolicyType::Filesystem => "filesystem",
+                    PolicyType::Network => "network",
+                    PolicyType::Platform => "platform",
                 }),
-                kind: None,
                 message,
             }),
-            Self::ToolLaunch {
-                program, message, ..
+            Self::Tool {
+                program,
+                r#type,
+                message,
+                ..
             } => Some(Response {
                 category: "tool",
                 file: None,
                 program: program
                     .as_ref()
                     .map(|program| program.to_string_lossy().into_owned()),
-                target: None,
-                kind: Some("launch"),
-                message,
-            }),
-            Self::ToolEncoding {
-                program, message, ..
-            } => Some(Response {
-                category: "tool",
-                file: None,
-                program: program
-                    .as_ref()
-                    .map(|program| program.to_string_lossy().into_owned()),
-                target: None,
-                kind: Some("encoding"),
+                r#type: Some(match r#type {
+                    ToolType::Launch => "launch",
+                    ToolType::Encoding => "encoding",
+                }),
                 message,
             }),
             Self::Platform { message } => Some(Response {
                 category: "platform",
                 file: None,
                 program: None,
-                target: None,
-                kind: None,
+                r#type: None,
                 message,
             }),
             Self::System { message, .. } => Some(Response {
                 category: "system",
                 file: None,
                 program: None,
-                target: None,
-                kind: None,
+                r#type: None,
                 message,
             }),
         }
     }
 
-    pub(crate) fn policy(target: PolicyTarget, message: impl Into<String>) -> Self {
+    pub(crate) fn policy(r#type: PolicyType, message: impl Into<String>) -> Self {
         Self::Policy {
             source: PolicySource::Stdin,
-            target,
+            r#type,
             message: message.into(),
             cause: None,
         }
     }
 
     pub(crate) fn policy_stdin_source(
-        target: PolicyTarget,
+        r#type: PolicyType,
         source: impl StdError + Send + Sync + 'static,
     ) -> Self {
         let (message, cause) = Self::cause(source);
         Self::Policy {
             source: PolicySource::Stdin,
-            target,
+            r#type,
             message,
             cause: Some(cause),
         }
@@ -144,32 +136,32 @@ impl Error {
 
     pub(crate) fn policy_file_source(
         path: PathBuf,
-        target: PolicyTarget,
+        r#type: PolicyType,
         source: impl StdError + Send + Sync + 'static,
     ) -> Self {
         let (message, cause) = Self::cause(source);
         Self::Policy {
             source: PolicySource::File(path),
-            target,
+            r#type,
             message,
             cause: Some(cause),
         }
     }
 
     pub(crate) fn tool_exec(program: Option<OsString>, error: io::Error) -> Self {
-        let kind = error.kind();
-        let (message, cause) = Self::cause(error);
-        if kind == io::ErrorKind::InvalidInput {
-            Self::ToolEncoding {
+        if error.to_string().contains("No such file") {
+            Self::Tool {
                 program,
-                message,
-                cause: Some(cause),
+                r#type: ToolType::Launch,
+                message: error.to_string(),
+                cause: Some(Box::new(error)),
             }
         } else {
-            Self::ToolLaunch {
+            Self::Tool {
                 program,
-                message,
-                cause: Some(cause),
+                r#type: ToolType::Encoding,
+                message: error.to_string(),
+                cause: Some(Box::new(error)),
             }
         }
     }
@@ -203,9 +195,7 @@ pub(crate) struct Response<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     program: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    target: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    kind: Option<&'a str>,
+    r#type: Option<&'a str>,
     message: &'a str,
 }
 
@@ -220,12 +210,7 @@ impl fmt::Display for Error {
             }
             | Self::Platform { message }
             | Self::System { message, .. }
-            | Self::ToolLaunch {
-                program: None,
-                message,
-                ..
-            }
-            | Self::ToolEncoding {
+            | Self::Tool {
                 program: None,
                 message,
                 ..
@@ -235,12 +220,7 @@ impl fmt::Display for Error {
                 message,
                 ..
             } => write!(f, "{}: {message}", file.display()),
-            Self::ToolLaunch {
-                program: Some(program),
-                message,
-                ..
-            }
-            | Self::ToolEncoding {
+            Self::Tool {
                 program: Some(program),
                 message,
                 ..
@@ -253,8 +233,7 @@ impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             Self::Policy { cause, .. }
-            | Self::ToolLaunch { cause, .. }
-            | Self::ToolEncoding { cause, .. }
+            | Self::Tool { cause, .. }
             | Self::System { cause, .. } => cause
                 .as_deref()
                 .map(|source| source as &(dyn StdError + 'static)),
@@ -278,7 +257,7 @@ impl From<serde_json::Error> for Error {
         let (message, cause) = Self::cause(error);
         Self::Policy {
             source: PolicySource::Stdin,
-            target: PolicyTarget::Platform,
+            r#type: PolicyType::Platform,
             message,
             cause: Some(cause),
         }

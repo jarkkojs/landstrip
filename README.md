@@ -64,14 +64,15 @@ exit with status 2.
 ```
 
 ```json
-{"category":"tool","program":"cargo","kind":"launch","message":"No such file or directory"}
+{"category":"tool","program":"cargo","type":"launch","message":"No such file or directory"}
 ```
 
 The `category` field is one of `policy`, `tool`, `platform`, or `system`. The
 `file` field is present when a policy error is tied to a policy file. The
 `program` field is present when landstrip could not start or encode a tool. The
-`kind` field is present for tool errors and is either `launch` (failed to start
-the tool) or `encoding` (failed to encode the command line).
+`type` field is present for policy or tool errors and is either `filesystem`,
+`network`, or `platform` for policy errors, or `launch` (failed to start
+the tool) or `encoding` (failed to encode the command line) for tool errors.
 
 Logs and sandboxed tool output are not part of the JSON response. Normal
 successful tool execution does not print a landstrip JSON response because

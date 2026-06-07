@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
-use crate::error::{Error, PolicyTarget, Result};
+use crate::error::{Error, PolicyType, Result};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::fs;
@@ -42,19 +42,19 @@ pub(crate) fn load_settings(policy_paths: &[PathBuf]) -> Result<Settings> {
         let mut json = String::new();
         io::stdin()
             .read_to_string(&mut json)
-            .map_err(|source| Error::policy_stdin_source(PolicyTarget::Platform, source))?;
+            .map_err(|source| Error::policy_stdin_source(PolicyType::Platform, source))?;
         let value: Value = serde_json::from_str(&json)
-            .map_err(|source| Error::policy_stdin_source(PolicyTarget::Platform, source))?;
+            .map_err(|source| Error::policy_stdin_source(PolicyType::Platform, source))?;
         merge_json(&mut merged, value);
     } else {
         for path in policy_paths {
             log::debug!("policy: file {}", path.display());
 
             let json = fs::read_to_string(path).map_err(|source| {
-                Error::policy_file_source(path.clone(), PolicyTarget::Platform, source)
+                Error::policy_file_source(path.clone(), PolicyType::Platform, source)
             })?;
             let value: Value = serde_json::from_str(&json).map_err(|source| {
-                Error::policy_file_source(path.clone(), PolicyTarget::Platform, source)
+                Error::policy_file_source(path.clone(), PolicyType::Platform, source)
             })?;
             merge_json(&mut merged, value);
         }

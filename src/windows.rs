@@ -3,7 +3,7 @@
 
 //! Windows sandbox platform using LPAC `AppContainer`.
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, ToolType};
 use crate::policy::{AccessPolicy, ReadAccess, UnixSocketAccess};
 use std::collections::hash_map::DefaultHasher;
 use std::ffi::{OsStr, OsString, c_void};
@@ -301,12 +301,12 @@ fn create_process_in_appcontainer(sid: PSID, tool: &OsStr, args: &[OsString]) ->
 
     if created == 0 {
         let code = unsafe { GetLastError() };
-        return Err(Error::ToolLaunch {
+        return Err(Error::Tool {
             program: Some(tool.to_os_string()),
+            r#type: ToolType::Launch,
             message: format!("CreateProcessW failed: error {code}"),
             cause: None,
         });
-    }
 
     let process = Handle(process_info.hProcess);
     let thread = Handle(process_info.hThread);
@@ -410,21 +410,21 @@ impl Drop for Handle {
 fn command_line(tool: &OsStr, args: &[OsString]) -> Result<String> {
     let mut parts = Vec::with_capacity(args.len() + 1);
     parts.push(
-        quote_command_arg(tool).map_err(|message| Error::ToolEncoding {
+        quote_command_arg(tool).map_err(|message| Error::Tool {
             program: Some(tool.to_os_string()),
+            r#type: ToolType::Encoding,
             message: message.to_owned(),
             cause: None,
         })?,
-    );
     for arg in args {
         parts.push(
-            quote_command_arg(arg).map_err(|message| Error::ToolEncoding {
+            quote_command_arg(arg).map_err(|message| Error::Tool {
                 program: Some(tool.to_os_string()),
+                r#type: ToolType::Encoding,
                 message: message.to_owned(),
                 cause: None,
             })?,
         );
-    }
     Ok(parts.join(" "))
 }
 

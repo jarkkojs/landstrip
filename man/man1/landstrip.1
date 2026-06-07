@@ -152,26 +152,34 @@ grants can persist after the sandboxed process exits.
 .Sh JSON OUTPUT
 .Nm
 prints landstrip failures as one compact JSON object on standard output. This
-covers policy, command launch, capability, and system errors.
+covers policy, tool launch, platform, and system errors.
 .Bd -literal -offset indent
-{"code":"policy","file":"policy.json","message":"expected value at line 1 column 1"}
+{"category":"policy","file":"policy.json","message":"expected value at line 1 column 1"}
 .Ed
-.Pp
 The
-.Va code
+.Va category
+field is present when a policy or launch error has a subtype
+(e.g.,
+.Va filesystem ,
+.Va network ,
+.Va platform ,
+.Va launch ,
+.Va encoding ).
+The
+.Va type
 field is one of
 .Va policy ,
-.Va command ,
-.Va capability ,
+.Va tool ,
+.Va platform ,
 or
 .Va system .
 The
 .Va file
 field is present when a policy error is tied to a policy file. The
-.Va command
+.Va program
 field is present when
 .Nm
-could not start or encode a command.
+could not start or encode a tool.
 .Pp
 Usage errors are not JSON responses; they are printed on standard error and
 exit with status 2. Logs and sandboxed command output are not part of the JSON
