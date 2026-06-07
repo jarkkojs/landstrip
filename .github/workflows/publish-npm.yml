@@ -226,16 +226,19 @@ jobs:
             target: x86_64-apple-darwin
             package_dir: npm/darwin-x64
             binary: landstrip
+            rustflags: ''
           - package: linux-x64
             runner: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             package_dir: npm/linux-x64
             binary: landstrip
+            rustflags: ''
           - package: win32-x64
             runner: windows-2025
             target: x86_64-pc-windows-msvc
             package_dir: npm/win32-x64
             binary: landstrip.exe
+            rustflags: '-C target-feature=+crt-static'
 
     steps:
       - name: Checkout
@@ -248,7 +251,12 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Build binary
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo build --release --locked --target "${{ matrix.target }}"
 
       - name: Stage binary
