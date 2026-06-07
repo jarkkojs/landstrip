@@ -416,6 +416,7 @@ fn command_line(tool: &OsStr, args: &[OsString]) -> Result<String> {
             message: message.to_owned(),
             cause: None,
         })?,
+    );
     for arg in args {
         parts.push(
             quote_command_arg(arg).map_err(|message| Error::Tool {
