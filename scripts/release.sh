@@ -17,6 +17,23 @@ ver_gt() {
 	fi
 }
 
+sed_in_place() {
+	local script="$1"
+	local path
+	local backups=()
+
+	shift
+	for path in "$@"; do
+		backups+=("$path.bak")
+	done
+	sed -E -i.bak "$script" "$@" || {
+		local status=$?
+		rm -f -- "${backups[@]}"
+		return "$status"
+	}
+	rm -f -- "${backups[@]}"
+}
+
 committed=0
 npm_package_jsons=(
 	package.json
@@ -73,7 +90,7 @@ man_page="man/man1/landstrip.1"
 
 command -v node >/dev/null || die "node is required to update npm package versions"
 
-sed -i -E "s/(^[[:space:]]*version[[:space:]]*=[[:space:]]*\")${cur_ver//./\\.}(\")/\1$next_ver\2/" Cargo.toml
+sed_in_place "/^[[:space:]]*version[[:space:]]*=/s/${cur_ver//./\\.}/$next_ver/" Cargo.toml
 grep -q "^version = \"$next_ver\"" Cargo.toml \
 	|| die "failed to update version in Cargo.toml"
 
@@ -111,7 +128,7 @@ NODE
 cargo clippy --all-targets --locked
 
 date="$(LC_TIME=C date '+%B %e, %Y' | sed 's/  / /')"
-sed -i -E "s/^\\.Dd .*/.Dd $date/" "$man_page"
+sed_in_place "s/^\\.Dd .*/.Dd $date/" "$man_page"
 grep -Fxq ".Dd $date" "$man_page" \
 	|| die "failed to update $man_page"
 
