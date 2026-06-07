@@ -4,7 +4,22 @@
 Seatbelt on macOS, and LPAC AppContainer on Windows.  It accepts the Anthropic
 Sandbox Runtime JSON subset as the policy.
 
-Backends compared:
+## Installation
+
+### npm
+
+```sh
+npm install --save-dev @jarkkojs/landstrip
+```
+
+```sh
+npx landstrip -p policy.json cargo test
+```
+
+The npm package installs a small Node.js wrapper and a platform-specific native
+binary package.
+
+## Backends
 
 | Area         | macOS                    | Linux                        | Windows                         |
 | ------------ | ------------------------ | ---------------------------- | ------------------------------- |

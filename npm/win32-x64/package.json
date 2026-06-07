@@ -1,0 +1,23 @@
+{
+  "name": "@jarkkojs/landstrip-win32-x64",
+  "version": "0.8.4",
+  "description": "Windows x64 binary for landstrip",
+  "license": "LGPL-2.1-or-later",
+  "homepage": "https://github.com/jarkkojs/landstrip#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jarkkojs/landstrip.git"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/landstrip.exe"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

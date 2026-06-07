@@ -18,11 +18,19 @@ ver_gt() {
 }
 
 committed=0
+npm_package_jsons=(
+	package.json
+	npm/darwin-arm64/package.json
+	npm/darwin-x64/package.json
+	npm/linux-x64/package.json
+	npm/win32-x64/package.json
+)
 
 cleanup() {
 	local status=$?
 	if (( status != 0 && !committed )); then
 		git restore -- Cargo.toml Cargo.lock man/man1/landstrip.1 \
+			"${npm_package_jsons[@]}" \
 			2>/dev/null || true
 	fi
 	return "$status"
@@ -63,6 +71,8 @@ ver_gt "$next_a" "$next_b" "$next_c" "$cur_a" "$cur_b" "$cur_c" \
 man_page="man/man1/landstrip.1"
 [[ -f "$man_page" ]] || die "missing man page: $man_page"
 
+command -v node >/dev/null || die "node is required to update npm package versions"
+
 sed -i -E "s/(^[[:space:]]*version[[:space:]]*=[[:space:]]*\")${cur_ver//./\\.}(\")/\1$next_ver\2/" Cargo.toml
 grep -q "^version = \"$next_ver\"" Cargo.toml \
 	|| die "failed to update version in Cargo.toml"
@@ -70,6 +80,33 @@ grep -q "^version = \"$next_ver\"" Cargo.toml \
 cargo metadata --format-version 1 >/dev/null
 grep -A2 '^name = "landstrip"' Cargo.lock | grep -q "^version = \"$next_ver\"" \
 	|| die "failed to update version in Cargo.lock"
+
+node - "$next_ver" "${npm_package_jsons[@]}" <<'NODE'
+const fs = require('node:fs');
+
+const [nextVersion, ...packagePaths] = process.argv.slice(2);
+const packages = packagePaths.map((packagePath) => [
+  packagePath,
+  JSON.parse(fs.readFileSync(packagePath, 'utf8')),
+]);
+const root = packages[0][1];
+
+root.version = nextVersion;
+
+for (const [, data] of packages.slice(1)) {
+  data.version = nextVersion;
+
+  if (!Object.prototype.hasOwnProperty.call(root.optionalDependencies, data.name)) {
+    throw new Error(`package.json missing optional dependency ${data.name}`);
+  }
+
+  root.optionalDependencies[data.name] = nextVersion;
+}
+
+for (const [packagePath, data] of packages) {
+  fs.writeFileSync(packagePath, `${JSON.stringify(data, null, 2)}\n`);
+}
+NODE
 
 cargo clippy --all-targets --locked
 
