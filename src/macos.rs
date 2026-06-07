@@ -46,8 +46,9 @@ impl Seatbelt for SystemSeatbelt {
         let mut errorbuf = ptr::null_mut();
 
         // SAFETY: profile is a live NULL-terminated C string and errorbuf points to writable
-        // storage.
-        let rc = unsafe { ffi::sandbox_init(profile.as_ptr(), SBPL_PROFILE_FLAGS, &mut errorbuf) };
+        // storage through a raw out pointer.
+        let rc =
+            unsafe { ffi::sandbox_init(profile.as_ptr(), SBPL_PROFILE_FLAGS, &raw mut errorbuf) };
         if rc == 0 {
             Ok(())
         } else {
