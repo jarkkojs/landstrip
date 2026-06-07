@@ -43,7 +43,7 @@ fn print_error_response(error: &Error) -> std::result::Result<(), serde_json::Er
         return Ok(());
     };
 
-    println!("{}", serde_json::to_string(&response)?);
+    eprintln!("{}", serde_json::to_string(&response)?);
     Ok(())
 }
 

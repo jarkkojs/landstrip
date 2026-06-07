@@ -151,7 +151,7 @@ allowlists; unrestricted read policy is rejected. AppContainer profiles and ACL
 grants can persist after the sandboxed process exits.
 .Sh JSON OUTPUT
 .Nm
-prints landstrip failures as one compact JSON object on standard output. This
+prints landstrip failures as one compact JSON object on standard error. This
 covers policy, tool launch, platform, and system errors.
 .Bd -literal -offset indent
 {"category":"policy","file":"policy.json","message":"expected value at line 1 column 1"}
@@ -184,7 +184,8 @@ could not start or encode a tool.
 Usage errors are not JSON responses; they are printed on standard error and
 exit with status 2. Logs and sandboxed command output are not part of the JSON
 response. Normal successful command execution does not print a JSON response
-because standard output belongs to the sandboxed command.
+because standard error belongs to landstrip and standard output belongs to the
+sandboxed command.
 .Sh EXIT STATUS
 On success,
 .Nm

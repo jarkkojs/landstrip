@@ -55,7 +55,7 @@ network policies until Windows network support exists.
 ## JSON Output
 
 Failures reported by `landstrip` are printed as one compact JSON object on
-standard output. This covers policy, tool launch, platform, and system
+standard error. This covers policy, tool launch, platform, and system
 errors. Usage errors are not JSON responses; they remain on standard error and
 exit with status 2.
 
@@ -76,7 +76,7 @@ the tool) or `encoding` (failed to encode the command line) for tool errors.
 
 Logs and sandboxed tool output are not part of the JSON response. Normal
 successful tool execution does not print a landstrip JSON response because
-standard output belongs to the sandboxed tool.
+standard error belongs to landstrip; standard output belongs to the sandboxed tool.
 
 ## Development
 
