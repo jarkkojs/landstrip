@@ -149,20 +149,16 @@ impl Error {
     }
 
     pub(crate) fn tool_exec(program: Option<OsString>, error: io::Error) -> Self {
-        if error.to_string().contains("No such file") {
-            Self::Tool {
-                program,
-                r#type: ToolType::Launch,
-                message: error.to_string(),
-                cause: Some(Box::new(error)),
-            }
+        let r#type = if error.to_string().contains("No such file") {
+            ToolType::Launch
         } else {
-            Self::Tool {
-                program,
-                r#type: ToolType::Encoding,
-                message: error.to_string(),
-                cause: Some(Box::new(error)),
-            }
+            ToolType::Encoding
+        };
+        Self::Tool {
+            program,
+            r#type,
+            message: error.to_string(),
+            cause: Some(Box::new(error)),
         }
     }
 
