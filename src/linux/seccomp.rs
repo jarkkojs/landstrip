@@ -18,12 +18,12 @@ use crate::error::{Error, Result};
 use crate::paths::normalize_path;
 use crate::policy::{AccessPolicy, UnixSocketAccess};
 use nix::errno::Errno;
-use nix::fcntl::{FcntlArg, fcntl};
-use nix::poll::{PollFd, PollFlags, poll};
-use nix::sys::socket::{ControlMessage, ControlMessageOwned, MsgFlags, recvmsg, sendmsg};
-use nix::sys::uio::{RemoteIoVec, process_vm_readv};
-use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
-use nix::unistd::{ForkResult, Pid, fork};
+use nix::fcntl::{fcntl, FcntlArg};
+use nix::poll::{poll, PollFd, PollFlags};
+use nix::sys::socket::{recvmsg, sendmsg, ControlMessage, ControlMessageOwned, MsgFlags};
+use nix::sys::uio::{process_vm_readv, RemoteIoVec};
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+use nix::unistd::{fork, ForkResult, Pid};
 use seccompiler::{
     BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
     SeccompRule, TargetArch,
@@ -420,17 +420,12 @@ fn handle_unix_connect(
     pid: u32,
     socket: &TargetSocket,
 ) -> SysResult<NotificationResult> {
-    let Some((target, relative)) = unix_path_target(pid, &socket.addr)? else {
+    let Some((target, _relative)) = unix_path_target(pid, &socket.addr)? else {
         return Err(BrokerError::PolicyDenied);
     };
     authorize_unix_path(policy, &target)?;
 
-    let mut addr = socket.addr.clone();
-    if relative {
-        rewrite_unix_path(&mut addr, &target)?;
-    }
-
-    broker_addr_call(socket.sock.as_raw_fd(), &addr, libc::connect).map(NotificationResult::Value)
+    Ok(NotificationResult::Continue)
 }
 
 fn handle_unix_bind(
