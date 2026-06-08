@@ -154,6 +154,26 @@ expect_success "allowWrite permits configured root" \
 expect_failure "allowWrite denies other root" \
     "$bin" -p "$policy_fs" "$sandbox_shell" -c ': > "$1/nope.txt"' _ "$tmp/denied"
 
+policy_yml=$tmp/policy-fs.yml
+printf '%s\n' \
+    'network:' \
+    '  allowNetwork: true' \
+    'filesystem:' \
+    '  allowWrite: |' \
+    "    $tmp/allowed" \
+    '  denyRead: |' \
+    '    /' \
+    '  allowRead: |' \
+    '    /' \
+    >"$policy_yml"
+expect_success "yml line policy permits configured root" \
+    "$bin" --format yml -p "$policy_yml" "$sandbox_shell" -c ': > "$1/yml-ok.txt"; test -f "$1/yml-ok.txt"' _ "$tmp/allowed"
+expect_failure "yml line policy denies other root" \
+    "$bin" --format yml -p "$policy_yml" "$sandbox_shell" -c ': > "$1/yml-nope.txt"' _ "$tmp/denied"
+
+expect_success "stdin yml policy runs tool" \
+    "$sandbox_shell" -c 'printf "%s\n" "network:" "  allowNetwork: true" "filesystem:" "  denyRead: |" "    /" "  allowRead: |" "    /" | "$1" --format yml "$2" -c "printf ok\\n"' _ "$bin" "$sandbox_shell"
+
 policy_netdeny=$tmp/policy-netdeny.json
 printf '{"filesystem":{"denyRead":["/"],"allowRead":["/"]}}' >"$policy_netdeny"
 expect_listener_denied "default network denies TCP listener" "$policy_netdeny"

@@ -7,6 +7,7 @@
 .Sh SYNOPSIS
 .Nm
 .Op Fl -debug
+.Op Fl -format Ar format
 .Op Fl p Ar policy
 .Op Fl -policy Ar policy
 .Ar command
@@ -15,7 +16,7 @@
 .Fl V
 .Sh DESCRIPTION
 .Nm
-loads a JSON policy, lowers the sandbox configuration into the platform sandbox
+loads a policy, lowers the sandbox configuration into the platform sandbox
 model, applies that sandbox, and then executes
 .Ar command .
 If no policy file is specified, the policy document is read from standard
@@ -24,13 +25,20 @@ input.
 The accepted policy format is the subset of Anthropic Sandbox Runtime
 settings that
 .Nm
-uses. Unknown JSON fields are ignored.
+uses. Unknown fields are ignored.
 .Sh OPTIONS
 .Bl -tag -width Ds
 .It Fl -debug
 Enable debug logging.
+.It Fl -format Ar format
+Select the policy format. The accepted values are
+.Va json
+and
+.Va yml .
+The default is
+.Va json .
 .It Fl p Ar policy , Fl -policy Ar policy
-Read a JSON policy file. This option may be repeated. Later policy arguments
+Read a policy file. This option may be repeated. Later policy arguments
 are merged over earlier policy arguments. Object values are merged recursively,
 arrays are concatenated without duplicates, and scalar values replace earlier
 values. Commas are literal filename characters.
@@ -57,6 +65,22 @@ The relevant policy shape is:
     "allowAllUnixSockets": false
   }
 }
+.Ed
+.Pp
+When
+.Fl -format Ar yml
+is used, path fields can also be written as one statement per non-empty line:
+.Bd -literal -offset indent
+filesystem:
+  allowWrite: |
+    .
+    ~/.cargo
+  denyRead: |
+    ~/.ssh
+  allowRead: |
+    ~/.ssh/config
+network:
+  allowNetwork: true
 .Ed
 .Pp
 Relative sandbox paths are resolved against the directory where

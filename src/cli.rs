@@ -13,9 +13,16 @@ const PROGRAM_NAME: &str = "landstrip";
 #[derive(Debug)]
 pub(crate) struct Cli {
     pub(crate) policy_paths: Vec<PathBuf>,
+    pub(crate) policy_format: PolicyFormat,
     pub(crate) debug: bool,
     pub(crate) tool: OsString,
     pub(crate) tool_args: Vec<OsString>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PolicyFormat {
+    Json,
+    Yaml,
 }
 
 #[derive(Debug, FromArgs)]
@@ -34,9 +41,13 @@ struct CliOptions {
     #[argh(switch, short = 'V')]
     version: bool,
 
-    /// policy JSON file; repeat to merge; stdin when omitted
+    /// policy file; repeat to merge; stdin when omitted
     #[argh(option, short = 'p', from_str_fn(parse_policy_path))]
     policy: Vec<PathBuf>,
+
+    /// policy format: json or yml; defaults to json
+    #[argh(option, from_str_fn(parse_policy_format))]
+    format: Option<PolicyFormat>,
 
     /// tool to run inside the sandbox, followed by its arguments
     #[argh(positional)]
@@ -99,6 +110,7 @@ fn parse_cli_action(
 
     Ok(CliAction::Run(Cli {
         policy_paths: options.policy,
+        policy_format: options.format.unwrap_or(PolicyFormat::Json),
         debug: options.debug,
         tool,
         tool_args: tool_tail.collect(),
@@ -115,6 +127,14 @@ fn split_cli_args(args: impl IntoIterator<Item = OsString>) -> (Vec<OsString>, V
         }
 
         if arg == OsStr::new("--policy") || arg == OsStr::new("-p") {
+            option_args.push(arg);
+            if let Some(value) = args.next() {
+                option_args.push(value);
+            }
+            continue;
+        }
+
+        if arg == OsStr::new("--format") {
             option_args.push(arg);
             if let Some(value) = args.next() {
                 option_args.push(value);
@@ -141,6 +161,14 @@ fn parse_policy_path(path: &str) -> std::result::Result<PathBuf, String> {
     }
 
     Ok(PathBuf::from(path))
+}
+
+fn parse_policy_format(format: &str) -> std::result::Result<PolicyFormat, String> {
+    match format {
+        "json" => Ok(PolicyFormat::Json),
+        "yml" | "yaml" => Ok(PolicyFormat::Yaml),
+        _ => Err("policy format must be json or yml".to_owned()),
+    }
 }
 
 enum ParsedOptions {

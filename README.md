@@ -2,7 +2,7 @@
 
 `landstrip` runs a tool in an OS-level sandbox using Landlock LSM on Linux,
 Seatbelt on macOS, and LPAC AppContainer on Windows.  It accepts the Anthropic
-Sandbox Runtime JSON subset as the policy.
+Sandbox Runtime JSON subset as the policy, in JSON or YAML syntax.
 
 ## Installation
 
@@ -32,6 +32,30 @@ Windows uses an AppContainer. The platform grants the generated AppContainer SID
 access to the lowered read and write roots, so Windows policies must use
 explicit read allowlists. Fine-grained TCP and Unix socket policies are rejected
 until Windows enforcement exists.
+
+## Policy Format
+
+JSON is the default policy format. Use `--format yml` for YAML policy files or
+YAML read from standard input.
+
+```sh
+landstrip --format yml -p policy.yml cargo test
+```
+
+YAML path fields can use normal lists or one statement per line:
+
+```yml
+filesystem:
+  allowWrite: |
+    .
+    ~/.cargo
+  denyRead: |
+    ~/.ssh
+  allowRead: |
+    ~/.ssh/config
+network:
+  allowNetwork: true
+```
 
 ## Network Policy
 

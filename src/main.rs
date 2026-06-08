@@ -55,8 +55,8 @@ fn run() -> Result<()> {
 
     let cwd = std::env::current_dir()?;
 
-    log::debug!("policy: cwd: {}", cwd.display());
-    let settings = load_settings(&cli.policy_paths)?;
+    log::debug!("cli: cwd: {}", cwd.display());
+    let settings = load_settings(&cli.policy_paths, cli.policy_format)?;
     let policy = resolve_policy(&settings.filesystem, &settings.network, &cwd)?;
 
     platform::execute(&policy, &cli.tool, &cli.tool_args)?;
