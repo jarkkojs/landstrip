@@ -248,17 +248,6 @@ impl From<io::Error> for Error {
     }
 }
 
-impl From<serde_json::Error> for Error {
-    fn from(error: serde_json::Error) -> Self {
-        let (message, cause) = Self::cause(error);
-        Self::Policy {
-            source: PolicySource::Stdin,
-            r#type: PolicyType::Platform,
-            message,
-            cause: Some(cause),
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, Display)]
 #[strum(serialize_all = "snake_case")]

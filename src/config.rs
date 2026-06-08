@@ -57,6 +57,9 @@ pub(crate) fn load_settings(
         let value = parse_policy_document(&document, policy_format)
             .map_err(|source| Error::policy_stdin_source(PolicyType::Platform, source))?;
         merge_json(&mut merged, value);
+        serde_json::from_value(merged).map_err(|source| {
+            Error::policy_stdin_source(PolicyType::Platform, source)
+        })
     } else {
         for path in policy_paths {
             log::debug!("config: {}", path.display());
@@ -69,9 +72,14 @@ pub(crate) fn load_settings(
             })?;
             merge_json(&mut merged, value);
         }
+        serde_json::from_value(merged).map_err(|source| {
+            Error::policy_file_source(
+                policy_paths[0].clone(),
+                PolicyType::Platform,
+                source,
+            )
+        })
     }
-
-    serde_json::from_value(merged).map_err(Error::from)
 }
 
 fn parse_policy_document(
