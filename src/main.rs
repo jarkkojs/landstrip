@@ -22,7 +22,7 @@ mod traversal;
 use crate::cli::parse_cli;
 use crate::config::load_settings;
 use crate::error::{Error, Result};
-use crate::policy::lower_sandbox_policy;
+use crate::policy::resolve_policy;
 use std::process;
 
 fn main() {
@@ -53,11 +53,13 @@ fn run() -> Result<()> {
         .format_timestamp(None)
         .init();
 
-    log::debug!("policy: base {}", cli.policy_base.display());
-    let settings = load_settings(&cli.policy_paths)?;
-    let policy = lower_sandbox_policy(&settings.filesystem, &settings.network, &cli.policy_base)?;
+    let cwd = std::env::current_dir()?;
 
-    platform::execute(&policy, &cli.policy_base, &cli.tool, &cli.tool_args)?;
+    log::debug!("policy: cwd: {}", cwd.display());
+    let settings = load_settings(&cli.policy_paths)?;
+    let policy = resolve_policy(&settings.filesystem, &settings.network, &cwd)?;
+
+    platform::execute(&policy, &cwd, &cli.tool, &cli.tool_args)?;
 
     Ok(())
 }

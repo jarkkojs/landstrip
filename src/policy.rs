@@ -68,7 +68,7 @@ pub(crate) enum UnixSocketAccess {
     AllowPaths(Vec<PathBuf>),
 }
 
-pub(crate) fn lower_sandbox_policy(
+pub(crate) fn resolve_policy(
     filesystem: &SandboxFilesystem,
     network: &SandboxNetwork,
     policy_base: &Path,

@@ -228,11 +228,11 @@ impl fmt::Display for Error {
 impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
-            Self::Policy { cause, .. }
-            | Self::Tool { cause, .. }
-            | Self::System { cause, .. } => cause
-                .as_deref()
-                .map(|source| source as &(dyn StdError + 'static)),
+            Self::Policy { cause, .. } | Self::Tool { cause, .. } | Self::System { cause, .. } => {
+                cause
+                    .as_deref()
+                    .map(|source| source as &(dyn StdError + 'static))
+            }
             Self::Usage(_) | Self::Platform { .. } => None,
         }
     }

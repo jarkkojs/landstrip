@@ -410,23 +410,19 @@ impl Drop for Handle {
 
 fn command_line(tool: &OsStr, args: &[OsString]) -> Result<String> {
     let mut parts = Vec::with_capacity(args.len() + 1);
-    parts.push(
-        quote_command_arg(tool).map_err(|message| Error::Tool {
+    parts.push(quote_command_arg(tool).map_err(|message| Error::Tool {
+        program: Some(tool.to_os_string()),
+        r#type: ToolType::Encoding,
+        message: message.to_owned(),
+        cause: None,
+    })?);
+    for arg in args {
+        parts.push(quote_command_arg(arg).map_err(|message| Error::Tool {
             program: Some(tool.to_os_string()),
             r#type: ToolType::Encoding,
             message: message.to_owned(),
             cause: None,
-        })?,
-    );
-    for arg in args {
-        parts.push(
-            quote_command_arg(arg).map_err(|message| Error::Tool {
-                program: Some(tool.to_os_string()),
-                r#type: ToolType::Encoding,
-                message: message.to_owned(),
-                cause: None,
-            })?,
-        );
+        })?);
     }
     Ok(parts.join(" "))
 }

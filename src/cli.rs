@@ -13,7 +13,6 @@ const PROGRAM_NAME: &str = "landstrip";
 #[derive(Debug)]
 pub(crate) struct Cli {
     pub(crate) policy_paths: Vec<PathBuf>,
-    pub(crate) policy_base: PathBuf,
     pub(crate) debug: bool,
     pub(crate) tool: OsString,
     pub(crate) tool_args: Vec<OsString>,
@@ -92,7 +91,6 @@ fn parse_cli_action(
         return Err(Error::Usage(tool_required_usage(&program_name)));
     }
 
-    let policy_base = env::current_dir()?;
     debug_assert!(options.tool.is_none());
     let mut tool_tail = tool_tail.into_iter();
     let tool = tool_tail
@@ -101,7 +99,6 @@ fn parse_cli_action(
 
     Ok(CliAction::Run(Cli {
         policy_paths: options.policy,
-        policy_base,
         debug: options.debug,
         tool,
         tool_args: tool_tail.collect(),

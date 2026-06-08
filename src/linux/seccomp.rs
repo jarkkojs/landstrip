@@ -13,17 +13,17 @@
 //! path checks.
 
 use super::fd::close_inherited_fds;
-use super::landlock::{enforce_access_policy, LandlockFeatures};
+use super::landlock::{LandlockFeatures, enforce_access_policy};
 use crate::error::{Error, Result};
 use crate::paths::normalize_path;
 use crate::policy::{AccessPolicy, UnixSocketAccess};
 use nix::errno::Errno;
-use nix::fcntl::{fcntl, FcntlArg};
-use nix::poll::{poll, PollFd, PollFlags};
-use nix::sys::socket::{recvmsg, sendmsg, ControlMessage, ControlMessageOwned, MsgFlags};
-use nix::sys::uio::{process_vm_readv, RemoteIoVec};
-use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-use nix::unistd::{fork, ForkResult, Pid};
+use nix::fcntl::{FcntlArg, fcntl};
+use nix::poll::{PollFd, PollFlags, poll};
+use nix::sys::socket::{ControlMessage, ControlMessageOwned, MsgFlags, recvmsg, sendmsg};
+use nix::sys::uio::{RemoteIoVec, process_vm_readv};
+use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+use nix::unistd::{ForkResult, Pid, fork};
 use seccompiler::{
     BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
     SeccompRule, TargetArch,
