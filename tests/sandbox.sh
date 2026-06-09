@@ -186,5 +186,23 @@ policy_allownet=$tmp/policy-allownet.json
 printf '{"network":{"allowNetwork":true},"filesystem":{"denyRead":["/"],"allowRead":["/"]}}' >"$policy_allownet"
 expect_listener_allowed "allowNetwork permits localhost listener" "$policy_allownet"
 
+policy_empty_path=$tmp/policy-empty-path.json
+printf '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":[""]}}' >"$policy_empty_path"
+expect_failure "empty path is rejected" \
+    "$bin" -p "$policy_empty_path" "$sandbox_shell" -c 'printf ok\\n'
+
+mkdir -p "$tmp/allowed/keep" "$tmp/allowed/sub"
+policy_denywrite=$tmp/policy-denywrite.json
+printf '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s/allowed"],"denyWrite":["%s/allowed/sub"],"denyRead":["/"],"allowRead":["/"]}}' "$tmp" "$tmp" >"$policy_denywrite"
+expect_success "denyWrite permits sibling write" \
+    "$bin" -p "$policy_denywrite" "$sandbox_shell" -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ "$tmp/allowed/keep"
+expect_failure "denyWrite denies subtree write" \
+    "$bin" -p "$policy_denywrite" "$sandbox_shell" -c ': > "$1/nope.txt"' _ "$tmp/allowed/sub"
+
+policy_proxy_zero=$tmp/policy-proxy-zero.json
+printf '{"network":{"httpProxyPort":0},"filesystem":{"denyRead":["/"],"allowRead":["/"]}}' >"$policy_proxy_zero"
+expect_failure "httpProxyPort zero is rejected" \
+    "$bin" -p "$policy_proxy_zero" "$sandbox_shell" -c 'printf ok\\n'
+
 printf 'SUMMARY pass=%s fail=%s tmp=%s\n' "$pass" "$fail" "$tmp"
 [ "$fail" -eq 0 ]
