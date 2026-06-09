@@ -45,7 +45,7 @@ struct CliOptions {
     #[argh(option, short = 'p', from_str_fn(parse_policy_path))]
     policy: Vec<PathBuf>,
 
-    /// policy format: json or yml; defaults to json
+    /// policy format: json or yaml; defaults to json
     #[argh(option, from_str_fn(parse_policy_format))]
     format: Option<PolicyFormat>,
 
@@ -166,8 +166,8 @@ fn parse_policy_path(path: &str) -> std::result::Result<PathBuf, String> {
 fn parse_policy_format(format: &str) -> std::result::Result<PolicyFormat, String> {
     match format {
         "json" => Ok(PolicyFormat::Json),
-        "yml" | "yaml" => Ok(PolicyFormat::Yaml),
-        _ => Err("policy format must be json or yml".to_owned()),
+        "yaml" => Ok(PolicyFormat::Yaml),
+        _ => Err("policy format must be json or yaml".to_owned()),
     }
 }
 
