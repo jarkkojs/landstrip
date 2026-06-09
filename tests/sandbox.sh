@@ -30,6 +30,7 @@ mkdir -p "$tmp/allowed" "$tmp/denied"
 pass=0
 fail=0
 port_base=$((49152 + ($$ % 10000)))
+test_seq=0
 
 pass() {
     pass=$((pass + 1))
@@ -67,6 +68,28 @@ expect_failure() {
     else
         fail "$name" "unexpected success output=$output"
     fi
+}
+
+write_policy() {
+    fmt=$1; shift
+    test_seq=$((test_seq + 1))
+    file="$tmp/policy-$test_seq.json"
+    printf "$fmt" "$@" >"$file"
+    printf '%s\n' "$file"
+}
+
+test_ok() {
+    name=$1
+    policy=$2
+    shift 2
+    expect_success "$name" "$bin" -p "$policy" "$@"
+}
+
+test_fail() {
+    name=$1
+    policy=$2
+    shift 2
+    expect_failure "$name" "$bin" -p "$policy" "$@"
 }
 
 next_port() {
@@ -142,17 +165,12 @@ expect_listener_allowed() {
     fi
 }
 
-policy_read=$tmp/policy-read.json
-printf '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s/allowed"]}}' "$tmp" >"$policy_read"
-expect_success "unrestricted read policy runs tool" \
-    "$bin" -p "$policy_read" "$sandbox_shell" -c 'printf ok\\n'
+policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s/allowed"]}}' "$tmp")
+test_ok "unrestricted read policy runs tool" "$policy" "$sandbox_shell" -c 'printf ok\\n'
 
-policy_fs=$tmp/policy-fs.json
-printf '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s/allowed"],"denyRead":["/"],"allowRead":["/"]}}' "$tmp" >"$policy_fs"
-expect_success "allowWrite permits configured root" \
-    "$bin" -p "$policy_fs" "$sandbox_shell" -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ "$tmp/allowed"
-expect_failure "allowWrite denies other root" \
-    "$bin" -p "$policy_fs" "$sandbox_shell" -c ': > "$1/nope.txt"' _ "$tmp/denied"
+policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s/allowed"],"denyRead":["/"],"allowRead":["/"]}}' "$tmp")
+test_ok "allowWrite permits configured root" "$policy" "$sandbox_shell" -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ "$tmp/allowed"
+test_fail "allowWrite denies other root" "$policy" "$sandbox_shell" -c ': > "$1/nope.txt"' _ "$tmp/denied"
 
 policy_yml=$tmp/policy-fs.yml
 printf '%s\n' \
@@ -174,35 +192,25 @@ expect_failure "yml line policy denies other root" \
 expect_success "stdin yml policy runs tool" \
     "$sandbox_shell" -c 'printf "%s\n" "network:" "  allowNetwork: true" "filesystem:" "  denyRead: |" "    /" "  allowRead: |" "    /" | "$1" --format yml "$2" -c "printf ok\\n"' _ "$bin" "$sandbox_shell"
 
-policy_netdeny=$tmp/policy-netdeny.json
-printf '{"filesystem":{"denyRead":["/"],"allowRead":["/"]}}' >"$policy_netdeny"
-expect_listener_denied "default network denies TCP listener" "$policy_netdeny"
+policy=$(write_policy '{"filesystem":{"denyRead":["/"],"allowRead":["/"]}}')
+expect_listener_denied "default network denies TCP listener" "$policy"
 
-policy_localbind=$tmp/policy-localbind.json
-printf '{"network":{"allowLocalBinding":true},"filesystem":{"denyRead":["/"],"allowRead":["/"]}}' >"$policy_localbind"
-expect_listener_allowed "allowLocalBinding permits localhost listener" "$policy_localbind"
+policy=$(write_policy '{"network":{"allowLocalBinding":true},"filesystem":{"denyRead":["/"],"allowRead":["/"]}}')
+expect_listener_allowed "allowLocalBinding permits localhost listener" "$policy"
 
-policy_allownet=$tmp/policy-allownet.json
-printf '{"network":{"allowNetwork":true},"filesystem":{"denyRead":["/"],"allowRead":["/"]}}' >"$policy_allownet"
-expect_listener_allowed "allowNetwork permits localhost listener" "$policy_allownet"
+policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"denyRead":["/"],"allowRead":["/"]}}')
+expect_listener_allowed "allowNetwork permits localhost listener" "$policy"
 
-policy_empty_path=$tmp/policy-empty-path.json
-printf '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":[""]}}' >"$policy_empty_path"
-expect_failure "empty path is rejected" \
-    "$bin" -p "$policy_empty_path" "$sandbox_shell" -c 'printf ok\\n'
+policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":[""]}}')
+test_fail "empty path is rejected" "$policy" "$sandbox_shell" -c 'printf ok\\n'
 
 mkdir -p "$tmp/allowed/keep" "$tmp/allowed/sub"
-policy_denywrite=$tmp/policy-denywrite.json
-printf '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s/allowed"],"denyWrite":["%s/allowed/sub"],"denyRead":["/"],"allowRead":["/"]}}' "$tmp" "$tmp" >"$policy_denywrite"
-expect_success "denyWrite permits sibling write" \
-    "$bin" -p "$policy_denywrite" "$sandbox_shell" -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ "$tmp/allowed/keep"
-expect_failure "denyWrite denies subtree write" \
-    "$bin" -p "$policy_denywrite" "$sandbox_shell" -c ': > "$1/nope.txt"' _ "$tmp/allowed/sub"
+policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s/allowed"],"denyWrite":["%s/allowed/sub"],"denyRead":["/"],"allowRead":["/"]}}' "$tmp" "$tmp")
+test_ok "denyWrite permits sibling write" "$policy" "$sandbox_shell" -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ "$tmp/allowed/keep"
+test_fail "denyWrite denies subtree write" "$policy" "$sandbox_shell" -c ': > "$1/nope.txt"' _ "$tmp/allowed/sub"
 
-policy_proxy_zero=$tmp/policy-proxy-zero.json
-printf '{"network":{"httpProxyPort":0},"filesystem":{"denyRead":["/"],"allowRead":["/"]}}' >"$policy_proxy_zero"
-expect_failure "httpProxyPort zero is rejected" \
-    "$bin" -p "$policy_proxy_zero" "$sandbox_shell" -c 'printf ok\\n'
+policy=$(write_policy '{"network":{"httpProxyPort":0},"filesystem":{"denyRead":["/"],"allowRead":["/"]}}')
+test_fail "httpProxyPort zero is rejected" "$policy" "$sandbox_shell" -c 'printf ok\\n'
 
 printf 'SUMMARY pass=%s fail=%s tmp=%s\n' "$pass" "$fail" "$tmp"
 [ "$fail" -eq 0 ]
