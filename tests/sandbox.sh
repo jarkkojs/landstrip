@@ -24,13 +24,18 @@ case $(uname -s) in
 esac
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+cleanup_dirs="$tmp"
+cleanup() {
+    for dir in $cleanup_dirs; do
+        rm -rf "$dir"
+    done
+}
+trap cleanup EXIT HUP INT TERM
 mkdir -p "$tmp/allowed" "$tmp/denied"
 
 pass=0
 fail=0
 port_base=$((49152 + ($$ % 10000)))
-test_seq=0
 
 pass() {
     pass=$((pass + 1))
@@ -72,8 +77,7 @@ expect_failure() {
 
 write_policy() {
     fmt=$1; shift
-    test_seq=$((test_seq + 1))
-    file="$tmp/policy-$test_seq.json"
+    file="$tmp/policy-next.json"
     printf "$fmt" "$@" >"$file"
     printf '%s\n' "$file"
 }
@@ -211,6 +215,44 @@ test_fail "denyWrite denies subtree write" "$policy" "$sandbox_shell" -c ': > "$
 
 policy=$(write_policy '{"network":{"httpProxyPort":0},"filesystem":{"denyRead":["/"],"allowRead":["/"]}}')
 test_fail "httpProxyPort zero is rejected" "$policy" "$sandbox_shell" -c 'printf ok\\n'
+
+policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s/allowed"]}}' "$tmp")
+printf '{bad' >"$policy"
+test_fail "malformed JSON policy is rejected" "$policy" "$sandbox_shell" -c 'printf ok\\n'
+
+policy=$(write_policy '{"network":{"socksProxyPort":0},"filesystem":{"denyRead":["/"],"allowRead":["/"]}}')
+test_fail "socksProxyPort zero is rejected" "$policy" "$sandbox_shell" -c 'printf ok\\n'
+
+mkdir -p "$tmp/globdir/match1" "$tmp/globdir/match2"
+policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s/globdir/*"],"denyRead":["/"],"allowRead":["/"]}}' "$tmp")
+test_ok "glob permits write in matched dir" "$policy" "$sandbox_shell" -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ "$tmp/globdir/match1"
+test_fail "glob denies write in unmatched dir" "$policy" "$sandbox_shell" -c ': > "$1/nope.txt"' _ "$tmp/globdir"
+
+home_testdir="$HOME/landstrip-test-$$"
+mkdir -p "$home_testdir"
+cleanup_dirs="$cleanup_dirs $home_testdir"
+policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["~/landstrip-test-%s"]}}' "$$")
+test_ok "home tilde permits configured root" "$policy" "$sandbox_shell" -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ "$home_testdir"
+
+mkdir -p "$tmp/read-ok" "$tmp/read-no"
+printf 'ok\n' >"$tmp/read-ok/data.txt"
+printf 'no\n' >"$tmp/read-no/data.txt"
+policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"denyRead":["/"],"allowRead":["%s/read-ok","/usr","/lib","/lib64","/bin","/sbin","/etc"]}}' "$tmp")
+test_ok "allowRead permits read in allowed path" "$policy" "$sandbox_shell" -c 'cat "$1/data.txt"' _ "$tmp/read-ok"
+test_fail "allowRead denies read in other path" "$policy" "$sandbox_shell" -c 'cat "$1/data.txt"' _ "$tmp/read-no"
+
+policy_fs=$(write_policy '{"filesystem":{"allowWrite":["%s/allowed"],"denyRead":["/"],"allowRead":["/"]}}' "$tmp")
+policy_net="$tmp/policy-net.json"
+printf '{"network":{"allowNetwork":true}}' >"$policy_net"
+expect_success "multiple policy files merge" \
+    "$bin" -p "$policy_fs" -p "$policy_net" "$sandbox_shell" -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ "$tmp/allowed"
+
+policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"denyRead":["/"],"allowRead":["/"]}}')
+expect_failure "tool not found is rejected" \
+    "$bin" -p "$policy" "$tmp/no-such-tool-$$"
+
+expect_failure "empty stdin policy is rejected" \
+    "$sandbox_shell" -c ': | "$1" "$2" -c "exit 0"' _ "$bin" "$sandbox_shell"
 
 printf 'SUMMARY pass=%s fail=%s tmp=%s\n' "$pass" "$fail" "$tmp"
 [ "$fail" -eq 0 ]
