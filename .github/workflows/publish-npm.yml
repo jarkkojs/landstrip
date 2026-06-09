@@ -375,3 +375,64 @@ jobs:
           publish_if_missing npm/linux-x64
           publish_if_missing npm/win32-x64
           publish_if_missing .
+
+  github-release:
+    name: Create GitHub Release
+    needs: [metadata, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download darwin-arm64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: darwin-arm64
+          path: artifacts/darwin-arm64
+
+      - name: Download darwin-x64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: darwin-x64
+          path: artifacts/darwin-x64
+
+      - name: Download linux-x64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x64
+          path: artifacts/linux-x64
+
+      - name: Download win32-x64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: win32-x64
+          path: artifacts/win32-x64
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${{ needs.metadata.outputs.version }}"
+          mkdir -p assets
+          mv artifacts/darwin-arm64/darwin-arm64.tar.gz \
+            "assets/landstrip-${ver}-darwin-arm64.tar.gz"
+          mv artifacts/darwin-x64/darwin-x64.tar.gz \
+            "assets/landstrip-${ver}-darwin-x64.tar.gz"
+          mv artifacts/linux-x64/linux-x64.tar.gz \
+            "assets/landstrip-${ver}-linux-x64-musl.tar.gz"
+          mv artifacts/win32-x64/win32-x64.tar.gz \
+            "assets/landstrip-${ver}-win32-x64.tar.gz"
+
+      - name: Create GitHub Release
+        shell: bash
+        run: |
+          if gh release view "${{ needs.metadata.outputs.tag }}" &>/dev/null; then
+            echo "Release already exists, skipping creation"
+            exit 0
+          fi
+          gh release create "${{ needs.metadata.outputs.tag }}" \
+            --title "landstrip ${{ needs.metadata.outputs.version }}" \
+            --generate-notes \
+            assets/landstrip-*.tar.gz
+        env:
+          GH_TOKEN: ${{ github.token }}
