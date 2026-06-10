@@ -180,9 +180,9 @@ prints landstrip failures as
 lines on standard error, one line per field.
 Fields with no value are omitted.
 .Bd -literal -offset indent
-category: policy
+reason: Other
 file: policy.json
-message: expected value at line 1 column 1
+source: expected value at line 1 column 1
 .Ed
 The
 .Va type
@@ -194,13 +194,12 @@ field is present when a policy or launch error has a subtype
 .Va launch ,
 .Va encoding ).
 The
-.Va category
-field is one of
-.Va policy ,
-.Va tool ,
-.Va platform ,
-or
-.Va system .
+.Va reason
+field is the error kind (e.g.
+.Va Other ,
+.Va LaunchFailed ,
+.Va SetupFailed ,
+.Va Usage ).
 The
 .Va file
 field is present when a policy error is tied to a policy file. The

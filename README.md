@@ -78,35 +78,35 @@ network policies until Windows network support exists.
 
 ## Error Output
 
-Failures reported by `landstrip` are printed as `field: value` lines on
-standard error, one line per field. Fields with no value are omitted.
-This covers policy, tool launch, platform, and system
-errors. Usage errors are not formatted responses; they remain on standard error and
-exit with status 2.
+Failures reported by `landstrip` are printed as `field: value` lines on standard
+error, one line per field. Fields with no value are omitted.  This covers
+policy, tool launch, platform, and system errors. Usage errors are not formatted
+responses; they remain on standard error and exit with status 2.
 
 ```
-category: policy
+reason: Other
 file: policy.json
-message: expected value at line 1 column 1
+source: expected value at line 1 column 1
 ```
 
 ```
-category: tool
+reason: LaunchFailed
 program: cargo
 type: launch
-message: No such file or directory
+source: No such file or directory
 ```
 
-The `category` field is one of `policy`, `tool`, `platform`, or `system`. The
-`file` field is present when a policy error is tied to a policy file. The
-`program` field is present when landstrip could not start or encode a tool. The
-`type` field is present for policy or tool errors and is either `filesystem`,
-`network`, or `platform` for policy errors, or `launch` (failed to start
-the tool) or `encoding` (failed to encode the command line) for tool errors.
+The `reason` field describes the error kind (e.g. `Other`, `LaunchFailed`,
+`SetupFailed`, `Usage`). The `file` field is present when a policy error is tied
+to a policy file. The `program` field is present when landstrip could not start
+or encode a tool. The `type` field is present for policy or tool errors and is
+either `filesystem`, `network`, or `platform` for policy errors, or `launch`
+(failed to start the tool) or `encoding` (failed to encode the command line) for
+tool errors.
 
-Logs and sandboxed tool output are not part of the response. Normal
-successful tool execution does not print a landstrip response because
-standard error belongs to landstrip; standard output belongs to the sandboxed tool.
+Logs and sandboxed tool output are not part of the response. Normal successful
+tool execution does not print a landstrip response because standard error
+belongs to landstrip; standard output belongs to the sandboxed tool.
 
 ## Development
 
