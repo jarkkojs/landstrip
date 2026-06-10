@@ -14,7 +14,7 @@
 
 use super::fd::close_inherited_fds;
 use super::landlock::{LandlockFeatures, enforce_access_policy};
-use crate::error::{Error, Result};
+use crate::error::{Error, ErrorKind, Result};
 use crate::paths::normalize_path;
 use crate::policy::{AccessPolicy, ReadAccess, UnixSocketAccess};
 use nix::errno::Errno;
@@ -129,7 +129,7 @@ pub(super) fn run_broker(
     }
 
     let eafnosupport =
-        u32::try_from(libc::EAFNOSUPPORT).map_err(|_| Error::system("invalid address"))?;
+        u32::try_from(libc::EAFNOSUPPORT).map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
     let errno = if errno_rules.is_empty() {
         None
     } else {
@@ -287,7 +287,7 @@ fn supervise_child(
                 }
             }
 
-            return Err(Error::system_source(source));
+            return Err(Error::policy_stdin_source(source));
         }
     }
 }
@@ -369,12 +369,9 @@ fn seccomp_probe(operation: libc::c_uint, data: *mut libc::c_void) -> Result<()>
     // SAFETY: seccomp(2) copies the operation-specific data pointer before returning.
     let rc = unsafe { libc::syscall(libc::SYS_seccomp, operation, 0, data) };
     if rc < 0 {
-        return Err(Error::Platform {
-            message: format!(
-                "seccomp user notifications are unavailable: {}",
-                Errno::last()
-            ),
-        });
+        return Err(Error::new(ErrorKind::FeatureNotAvailable)
+            .with_mechanism("seccomp")
+            .with_errno(Errno::last()));
     }
 
     Ok(())
@@ -422,7 +419,7 @@ fn validate_notification_id(fd: RawFd, id: u64) -> Result<()> {
 }
 
 fn system_errno(errno: i32) -> Error {
-    Error::system(format!("failed with {errno}"))
+    Error::new(ErrorKind::SystemCallFailed).with_errno(errno)
 }
 
 fn handle_bind(
@@ -727,7 +724,7 @@ pub(super) fn network_filter(config: NetworkFilter, needs_network: bool) -> Resu
     }
 
     let eafnosupport =
-        u32::try_from(libc::EAFNOSUPPORT).map_err(|_| Error::system("invalid address"))?;
+        u32::try_from(libc::EAFNOSUPPORT).map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
     let errno = if errno_rules.is_empty() {
         None
     } else {
@@ -779,18 +776,18 @@ impl NetworkFilters {
         let notify = self
             .notify
             .as_ref()
-            .ok_or_else(|| Error::system("missing seccomp notification filter"))?;
+            .ok_or_else(|| Error::new(ErrorKind::InvalidProfile))?;
 
         load_program(notify, libc::SECCOMP_FILTER_FLAG_NEW_LISTENER)?
-            .ok_or_else(|| Error::system("seccomp did not return a notification listener"))
+            .ok_or_else(|| Error::new(ErrorKind::FileDescriptorNotFound))
     }
 }
 
 fn build_filter(rules: RuleMap, match_action: SeccompAction) -> Result<BpfProgram> {
     let filter = SeccompFilter::new(rules, SeccompAction::Allow, match_action, target_arch()?)
-        .map_err(Error::system_source)?;
-    let program =
-        <BpfProgram as TryFrom<SeccompFilter>>::try_from(filter).map_err(Error::system_source)?;
+        .map_err(Error::policy_stdin_source)?;
+    let program = <BpfProgram as TryFrom<SeccompFilter>>::try_from(filter)
+        .map_err(Error::policy_stdin_source)?;
 
     Ok(program)
 }
@@ -805,7 +802,7 @@ fn build_notify_filter(syscalls: &[i64]) -> Result<BpfProgram> {
     for syscall in syscalls {
         program.push(bpf_jump(
             jump_eq,
-            u32::try_from(*syscall).map_err(|_| Error::system("invalid address"))?,
+            u32::try_from(*syscall).map_err(|_| Error::new(ErrorKind::InvalidResponse))?,
             0,
             1,
         ));
@@ -817,7 +814,7 @@ fn build_notify_filter(syscalls: &[i64]) -> Result<BpfProgram> {
 }
 
 fn bpf_code(code: u32) -> Result<u16> {
-    u16::try_from(code).map_err(|_| Error::system("invalid address"))
+    u16::try_from(code).map_err(|_| Error::new(ErrorKind::InvalidResponse))
 }
 
 fn bpf_stmt(code: u16, k: u32) -> seccompiler::sock_filter {
@@ -838,15 +835,13 @@ fn target_arch() -> Result<TargetArch> {
         "x86_64" => Ok(TargetArch::x86_64),
         "aarch64" => Ok(TargetArch::aarch64),
         "riscv64" => Ok(TargetArch::riscv64),
-        arch => Err(Error::Platform {
-            message: format!("seccompiler does not support Linux architecture {arch}"),
-        }),
+        arch => Err(Error::new(ErrorKind::ArchitectureNotSupported).with_arch(arch)),
     }
 }
 
 fn load_program(program: &BpfProgram, flags: libc::c_ulong) -> Result<Option<OwnedFd>> {
     if program.is_empty() {
-        return Err(Error::system("empty seccomp filter"));
+        return Err(Error::new(ErrorKind::InvalidProfile));
     }
 
     // SAFETY: prctl(2) copies scalar arguments only.
@@ -854,8 +849,8 @@ fn load_program(program: &BpfProgram, flags: libc::c_ulong) -> Result<Option<Own
         return Err(system_errno(Errno::last() as i32));
     }
 
-    let len =
-        libc::c_ushort::try_from(program.len()).map_err(|_| Error::system("invalid address"))?;
+    let len = libc::c_ushort::try_from(program.len())
+        .map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
     let filter = SockFprog {
         len,
         filter: program.as_ptr(),
@@ -878,7 +873,7 @@ fn load_program(program: &BpfProgram, flags: libc::c_ulong) -> Result<Option<Own
         return Ok(None);
     }
 
-    let fd = RawFd::try_from(rc).map_err(|_| Error::system("invalid address"))?;
+    let fd = RawFd::try_from(rc).map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
     // SAFETY: seccomp returned a new listener fd when NEW_LISTENER was set.
     Ok(Some(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
@@ -889,7 +884,7 @@ fn seccomp_condition(
     value: u64,
 ) -> Result<SeccompCondition> {
     SeccompCondition::new(arg_index, SeccompCmpArgLen::Dword, operator, value)
-        .map_err(Error::system_source)
+        .map_err(Error::policy_stdin_source)
 }
 
 fn add_conditional_rule(
@@ -897,7 +892,7 @@ fn add_conditional_rule(
     syscall: i64,
     conditions: Vec<SeccompCondition>,
 ) -> Result<()> {
-    let rule = SeccompRule::new(conditions).map_err(Error::system_source)?;
+    let rule = SeccompRule::new(conditions).map_err(Error::policy_stdin_source)?;
     rules.entry(syscall).or_default().push(rule);
 
     Ok(())
@@ -955,11 +950,13 @@ pub(super) enum UnixSocketFilter {
 }
 
 fn add_socket_family_filter(rules: &mut RuleMap, socket: i64) -> Result<()> {
-    let stream = u64::try_from(libc::SOCK_STREAM).map_err(|_| Error::system("invalid address"))?;
-    let tcp = u64::try_from(libc::IPPROTO_TCP).map_err(|_| Error::system("invalid address"))?;
+    let stream =
+        u64::try_from(libc::SOCK_STREAM).map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
+    let tcp =
+        u64::try_from(libc::IPPROTO_TCP).map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
 
     for domain in [libc::AF_INET, libc::AF_INET6] {
-        let domain = u64::try_from(domain).map_err(|_| Error::system("invalid address"))?;
+        let domain = u64::try_from(domain).map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
 
         for ty in 0..=SOCK_TYPE_MASK {
             if ty == stream {
@@ -1007,7 +1004,7 @@ fn add_socket_family_filter(rules: &mut RuleMap, socket: i64) -> Result<()> {
 }
 
 fn add_socket_domain_filter(rules: &mut RuleMap, socket: i64, domain: i32) -> Result<()> {
-    let domain = u64::try_from(domain).map_err(|_| Error::system("invalid address"))?;
+    let domain = u64::try_from(domain).map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
 
     add_conditional_rule(
         rules,
@@ -1172,10 +1169,10 @@ fn check_fs_write(policy: &AccessPolicy, path: &Path) -> SysResult<()> {
 
 fn emit_fs_denial(path: &Path, seen: &mut HashSet<PathBuf>) {
     if seen.insert(path.to_path_buf()) {
-        eprintln!("category: policy");
-        eprintln!("type: filesystem");
-        eprintln!("file: {}", path.display());
-        eprintln!("message: access denied");
+        Error::new(ErrorKind::AccessDenied)
+            .with_type("filesystem")
+            .with_file(path.to_path_buf())
+            .emit();
     }
 }
 
@@ -1232,7 +1229,7 @@ fn recv_fd(socket: &UnixStream) -> Result<OwnedFd> {
     .map_err(|error| system_errno(error as i32))?;
 
     if message.bytes == 0 {
-        return Err(Error::system("peer closed connection"));
+        return Err(Error::new(ErrorKind::ConnectionClosed));
     }
 
     for control in message
@@ -1248,7 +1245,7 @@ fn recv_fd(socket: &UnixStream) -> Result<OwnedFd> {
         }
     }
 
-    Err(Error::system("missing file descriptor"))
+    Err(Error::new(ErrorKind::FileDescriptorNotFound))
 }
 
 #[derive(Debug)]

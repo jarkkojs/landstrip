@@ -12,7 +12,7 @@
 //! while lowering the policy.
 
 use crate::config::{SandboxFilesystem, SandboxNetwork};
-use crate::error::{Error, PolicyPort, PolicyType, Result};
+use crate::error::{Error, ErrorKind, PolicyPort, Result};
 use crate::paths::{normalize_path, normalize_path_lexically, normalize_roots};
 use crate::traversal::subtract_denied_roots;
 use std::env;
@@ -149,10 +149,7 @@ fn push_proxy_port(ports: &mut Vec<u16>, port: Option<u16>, port_name: PolicyPor
     };
 
     if port == 0 {
-        return Err(Error::policy(
-            PolicyType::Network,
-            format!("{port_name} port out of range"),
-        ));
+        return Err(Error::new(ErrorKind::InvalidPort).with_port(port_name));
     }
 
     ports.push(port);
@@ -185,7 +182,7 @@ fn resolve_paths(
 }
 fn resolve_sandbox_path(path: &str, base: &Path, home: Option<&Path>) -> Result<PathBuf> {
     if path.is_empty() {
-        return Err(Error::policy(PolicyType::Filesystem, "path empty"));
+        return Err(Error::new(ErrorKind::InvalidPath));
     }
 
     let raw = Path::new(path);
@@ -193,10 +190,10 @@ fn resolve_sandbox_path(path: &str, base: &Path, home: Option<&Path>) -> Result<
         raw.to_path_buf()
     } else if path == "~" {
         home.map(Path::to_path_buf)
-            .ok_or_else(|| Error::policy(PolicyType::Filesystem, "home unavailable"))?
+            .ok_or_else(|| Error::new(ErrorKind::HomeNotAvailable))?
     } else if let Some(rest) = path.strip_prefix("~/") {
         home.map(|home| home.join(rest))
-            .ok_or_else(|| Error::policy(PolicyType::Filesystem, "home unavailable"))?
+            .ok_or_else(|| Error::new(ErrorKind::HomeNotAvailable))?
     } else {
         base.join(raw)
     };

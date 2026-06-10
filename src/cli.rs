@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
-use crate::error::{Error, Result};
+use crate::error::{Error, ErrorKind, Result};
 use argh::FromArgs;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -99,14 +99,14 @@ fn parse_cli_action(
     }
 
     if tool_tail.is_empty() {
-        return Err(Error::Usage(tool_required_usage(&program_name)));
+        return Err(Error::new(ErrorKind::Usage).with_source(tool_required_usage(&program_name)));
     }
 
     debug_assert!(options.tool.is_none());
     let mut tool_tail = tool_tail.into_iter();
-    let tool = tool_tail
-        .next()
-        .ok_or_else(|| Error::Usage(tool_required_usage(PROGRAM_NAME)))?;
+    let tool = tool_tail.next().ok_or_else(|| {
+        Error::new(ErrorKind::Usage).with_source(tool_required_usage(PROGRAM_NAME))
+    })?;
 
     Ok(CliAction::Run(Cli {
         policy_paths: options.policy,
@@ -184,9 +184,9 @@ fn parse_cli_options(
     let mut arg_strings = Vec::with_capacity(args.size_hint().0);
 
     for arg in args {
-        let string = arg
-            .into_string()
-            .map_err(|_| Error::Usage("argument encoding".to_owned()))?;
+        let string = arg.into_string().map_err(|_| {
+            Error::new(ErrorKind::Usage).with_source("argument encoding".to_owned())
+        })?;
 
         arg_strings.push(string);
     }
@@ -205,7 +205,7 @@ fn parse_cli_options(
                     .next()
                     .filter(|line| !line.is_empty())
                     .unwrap_or("arguments invalid");
-                Err(Error::Usage(message.to_owned()))
+                Err(Error::new(ErrorKind::Usage).with_source(message.to_owned()))
             }
         }
     }

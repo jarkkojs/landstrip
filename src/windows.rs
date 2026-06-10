@@ -3,7 +3,7 @@
 
 //! Windows sandbox platform using LPAC `AppContainer`.
 
-use crate::error::{Error, Result, ToolType};
+use crate::error::{Error, ErrorKind, Result};
 use crate::policy::{AccessPolicy, ReadAccess, UnixSocketAccess};
 use std::collections::hash_map::DefaultHasher;
 use std::ffi::{OsStr, OsString, c_void};
@@ -55,30 +55,22 @@ pub(crate) fn execute(policy: &AccessPolicy, tool: &OsStr, args: &[OsString]) ->
 
 fn reject_unsupported_policy(policy: &AccessPolicy) -> Result<()> {
     if matches!(policy.read_access, ReadAccess::Unrestricted) {
-        return Err(Error::Platform {
-            message: "read access must use explicit allow roots".to_owned(),
-        });
+        return Err(Error::new(ErrorKind::FeatureNotSupported).with_feature("read access"));
     }
 
     let network = &policy.network_access;
 
     if network.is_unrestricted() {
-        return Err(Error::Platform {
-            message: "unrestricted network is not supported yet".to_owned(),
-        });
+        return Err(Error::new(ErrorKind::FeatureNotSupported).with_feature("unrestricted network"));
     }
 
     if network.local_tcp_bind || !network.connect_tcp_ports.is_empty() {
-        return Err(Error::Platform {
-            message: "TCP policies are not supported yet".to_owned(),
-        });
+        return Err(Error::new(ErrorKind::FeatureNotSupported).with_feature("TCP policies"));
     }
 
     if !matches!(&network.unix_socket_access, UnixSocketAccess::AllowPaths(paths) if paths.is_empty())
     {
-        return Err(Error::Platform {
-            message: "Unix socket policies are not supported".to_owned(),
-        });
+        return Err(Error::new(ErrorKind::FeatureNotSupported).with_feature("Unix socket policies"));
     }
 
     Ok(())
@@ -118,17 +110,17 @@ impl AppContainerProfile {
 
         if hresult_value(hr) & 0xffff != ERROR_ALREADY_EXISTS {
             let code = hresult_value(hr);
-            return Err(Error::system(format!(
-                "CreateAppContainerProfile failed: HRESULT {code}"
-            )));
+            return Err(Error::new(ErrorKind::SystemCallFailed)
+                .with_api("CreateAppContainerProfile")
+                .with_code(code));
         }
 
         let hr = unsafe { DeriveAppContainerSidFromAppContainerName(moniker.as_ptr(), &mut sid) };
         if hr != 0 {
             let code = hresult_value(hr);
-            return Err(Error::system(format!(
-                "DeriveAppContainerSidFromAppContainerName failed: HRESULT {code}"
-            )));
+            return Err(Error::new(ErrorKind::SystemCallFailed)
+                .with_api("DeriveAppContainerSidFromAppContainerName")
+                .with_code(code));
         }
 
         Ok(Self { sid })
@@ -151,9 +143,7 @@ fn grant_policy_access(policy: &AccessPolicy, sid: PSID) -> Result<()> {
     let read_roots = match &policy.read_access {
         ReadAccess::AllowRoots(read_roots) => read_roots,
         ReadAccess::Unrestricted => {
-            return Err(Error::Platform {
-                message: "read access must use explicit allow roots".to_owned(),
-            });
+            return Err(Error::new(ErrorKind::FeatureNotSupported).with_feature("read access"));
         }
     };
 
@@ -194,9 +184,9 @@ fn grant_path_access(path: &Path, sid: PSID, access: u32) -> Result<()> {
         )
     };
     if status != 0 {
-        return Err(Error::system(format!(
-            "GetNamedSecurityInfoW failed: status {status}"
-        )));
+        return Err(Error::new(ErrorKind::SystemCallFailed)
+            .with_api("GetNamedSecurityInfoW")
+            .with_code(status));
     }
 
     let explicit_access = EXPLICIT_ACCESS_W {
@@ -216,9 +206,9 @@ fn grant_path_access(path: &Path, sid: PSID, access: u32) -> Result<()> {
     let status = unsafe { SetEntriesInAclW(1, &explicit_access, old_dacl, &mut new_dacl) };
     if status != 0 {
         unsafe { LocalFree(security_descriptor) };
-        return Err(Error::system(format!(
-            "SetEntriesInAclW failed: status {status}"
-        )));
+        return Err(Error::new(ErrorKind::SystemCallFailed)
+            .with_api("SetEntriesInAclW")
+            .with_code(status));
     }
 
     let status = unsafe {
@@ -239,9 +229,9 @@ fn grant_path_access(path: &Path, sid: PSID, access: u32) -> Result<()> {
     }
 
     if status != 0 {
-        return Err(Error::system(format!(
-            "SetNamedSecurityInfoW failed: status {status}"
-        )));
+        return Err(Error::new(ErrorKind::SystemCallFailed)
+            .with_api("SetNamedSecurityInfoW")
+            .with_code(status));
     }
 
     Ok(())
@@ -252,7 +242,7 @@ fn create_process_in_appcontainer(sid: PSID, tool: &OsStr, args: &[OsString]) ->
     let mut command_line = wide_string(&command_line);
     let mut startup_info = unsafe { mem::zeroed::<STARTUPINFOEXW>() };
     startup_info.StartupInfo.cb = u32::try_from(mem::size_of::<STARTUPINFOEXW>())
-        .map_err(|_| Error::system("startup info size exceeds u32"))?;
+        .map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
 
     let mut attribute_list = ProcThreadAttributeList::new(2)?;
     let mut capabilities = SECURITY_CAPABILITIES {
@@ -295,12 +285,9 @@ fn create_process_in_appcontainer(sid: PSID, tool: &OsStr, args: &[OsString]) ->
 
     if created == 0 {
         let code = unsafe { GetLastError() };
-        return Err(Error::Tool {
-            program: Some(tool.to_os_string()),
-            r#type: ToolType::Launch,
-            message: format!("CreateProcessW failed: error {code}"),
-            cause: None,
-        });
+        return Err(Error::new(ErrorKind::LaunchFailed)
+            .with_program(tool.to_os_string())
+            .with_code(code));
     }
 
     let process = Handle(process_info.hProcess);
@@ -308,18 +295,18 @@ fn create_process_in_appcontainer(sid: PSID, tool: &OsStr, args: &[OsString]) ->
     let wait = unsafe { WaitForSingleObject(process.0, INFINITE) };
     if wait == WAIT_FAILED {
         let code = unsafe { GetLastError() };
-        return Err(Error::system(format!(
-            "WaitForSingleObject failed: error {code}"
-        )));
+        return Err(Error::new(ErrorKind::SystemCallFailed)
+            .with_api("WaitForSingleObject")
+            .with_code(code));
     }
 
     let mut exit_code = 0;
     let ok = unsafe { GetExitCodeProcess(process.0, &mut exit_code) };
     if ok == 0 {
         let code = unsafe { GetLastError() };
-        return Err(Error::system(format!(
-            "GetExitCodeProcess failed: error {code}"
-        )));
+        return Err(Error::new(ErrorKind::SystemCallFailed)
+            .with_api("GetExitCodeProcess")
+            .with_code(code));
     }
 
     drop(thread);
@@ -346,9 +333,9 @@ fn update_attribute(
     };
     if ok == 0 {
         let code = unsafe { GetLastError() };
-        return Err(Error::system(format!(
-            "UpdateProcThreadAttribute failed: error {code}"
-        )));
+        return Err(Error::new(ErrorKind::SystemCallFailed)
+            .with_api("UpdateProcThreadAttribute")
+            .with_code(code));
     }
     Ok(())
 }
@@ -363,9 +350,9 @@ impl ProcThreadAttributeList {
         let ok = unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), count, 0, &mut size) };
         let code = unsafe { GetLastError() };
         if ok != 0 || code != ERROR_INSUFFICIENT_BUFFER {
-            return Err(Error::system(format!(
-                "InitializeProcThreadAttributeList failed: error {code}"
-            )));
+            return Err(Error::new(ErrorKind::SystemCallFailed)
+                .with_api("InitializeProcThreadAttributeList")
+                .with_code(code));
         }
 
         let mut storage = vec![0_u8; size];
@@ -373,9 +360,9 @@ impl ProcThreadAttributeList {
         let ok = unsafe { InitializeProcThreadAttributeList(list, count, 0, &mut size) };
         if ok == 0 {
             let code = unsafe { GetLastError() };
-            return Err(Error::system(format!(
-                "InitializeProcThreadAttributeList failed: error {code}"
-            )));
+            return Err(Error::new(ErrorKind::SystemCallFailed)
+                .with_api("InitializeProcThreadAttributeList")
+                .with_code(code));
         }
 
         Ok(Self { storage })
@@ -412,12 +399,9 @@ fn command_line(tool: &OsStr, args: &[OsString]) -> Result<String> {
 }
 
 fn tool_encoding_error(tool: &OsStr, message: &str) -> Error {
-    Error::Tool {
-        program: Some(tool.to_os_string()),
-        r#type: ToolType::Encoding,
-        message: message.to_owned(),
-        cause: None,
-    }
+    Error::new(ErrorKind::InvalidEncoding)
+        .with_program(tool.to_os_string())
+        .with_source(message.to_owned())
 }
 
 fn quote_command_arg(arg: &OsStr) -> std::result::Result<String, &'static str> {

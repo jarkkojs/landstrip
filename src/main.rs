@@ -3,6 +3,8 @@
 
 #![deny(clippy::all)]
 #![deny(clippy::pedantic)]
+// Large Err variant expected — Error carries optional diagnostic context
+#![allow(clippy::result_large_err)]
 
 mod cli;
 mod config;
@@ -21,7 +23,7 @@ mod traversal;
 
 use crate::cli::{Cli, parse_cli};
 use crate::config::load_settings;
-use crate::error::{Error, Result};
+use crate::error::{ErrorKind, Result};
 use crate::policy::resolve_policy;
 use std::process;
 
@@ -29,8 +31,8 @@ fn main() {
     let cli = match parse_cli() {
         Ok(cli) => cli,
         Err(error) => {
-            print_error_response(&error);
-            process::exit(if matches!(error, Error::Usage(_)) {
+            error.emit();
+            process::exit(if matches!(error.kind, ErrorKind::Usage) {
                 2
             } else {
                 1
@@ -39,31 +41,13 @@ fn main() {
     };
 
     if let Err(error) = run_with_cli(&cli) {
-        if let Error::Usage(_) = &error {
+        if let ErrorKind::Usage = error.kind {
             eprintln!("{error}");
             process::exit(2);
         }
-        print_error_response(&error);
+        error.emit();
         process::exit(1);
     }
-}
-
-fn print_error_response(error: &Error) {
-    let Some(response) = error.response() else {
-        return;
-    };
-
-    eprintln!("category: {}", response.category);
-    if let Some(file) = &response.file {
-        eprintln!("file: {file}");
-    }
-    if let Some(program) = &response.program {
-        eprintln!("program: {program}");
-    }
-    if let Some(e_type) = response.r#type {
-        eprintln!("type: {e_type}");
-    }
-    eprintln!("message: {}", response.message);
 }
 
 fn run_with_cli(cli: &Cli) -> Result<()> {

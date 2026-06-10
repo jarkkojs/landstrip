@@ -3,15 +3,13 @@
 
 //! Fallback platform implementation for unsupported platforms.
 //!
-//! Returns [`Error::Platform`] to communicate that the current
+//! Returns [`ErrorKind::Unsupported`] to communicate that the current
 //! operating system is not yet supported by landstrip.
 
-use crate::error::{Error, Result};
+use crate::error::{Error, ErrorKind, Result};
 use crate::policy::AccessPolicy;
 use std::ffi::{OsStr, OsString};
 
 pub(crate) fn execute(_policy: &AccessPolicy, _tool: &OsStr, _args: &[OsString]) -> Result<()> {
-    Err(Error::Platform {
-        message: "platform sandbox support is missing".to_owned(),
-    })
+    Err(Error::new(ErrorKind::Unsupported))
 }

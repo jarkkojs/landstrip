@@ -3,7 +3,7 @@
 
 //! macOS Seatbelt (SBPL) sandbox platform.
 
-use crate::error::{Error, Result};
+use crate::error::{Error, ErrorKind, Result};
 use crate::policy::{AccessPolicy, NetworkAccess, ReadAccess, UnixSocketAccess};
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fmt::{self, Write};
@@ -15,7 +15,7 @@ use std::ptr;
 const SBPL_PROFILE_FLAGS: u64 = 0;
 
 pub(crate) fn execute(policy: &AccessPolicy, tool: &OsStr, args: &[OsString]) -> Result<()> {
-    let profile = render_profile(policy).map_err(Error::system_source)?;
+    let profile = render_profile(policy).map_err(Error::policy_stdin_source)?;
     let args = canonicalize_args(args);
     apply_profile(&profile)?;
     let error = Command::new(tool).args(&args).exec();
@@ -38,9 +38,9 @@ fn canonicalize_args(args: &[OsString]) -> Vec<OsString> {
 fn apply_profile(profile: &str) -> Result<()> {
     let profile = CString::new(profile).map_err(|source| {
         let nul_position = source.nul_position();
-        Error::system(format!(
-            "generated SBPL profile contains an interior NUL byte at offset {nul_position}"
-        ))
+        Error::new(ErrorKind::InvalidEncoding)
+            .with_offset(nul_position)
+            .with_mechanism("sbpl")
     })?;
     let mut errorbuf = ptr::null_mut();
 
@@ -50,7 +50,9 @@ fn apply_profile(profile: &str) -> Result<()> {
     if rc == 0 {
         Ok(())
     } else {
-        Err(Error::system(take_sandbox_error(errorbuf)))
+        Err(Error::new(ErrorKind::SetupFailed)
+            .with_source(take_sandbox_error(errorbuf))
+            .with_mechanism("sbpl"))
     }
 }
 
@@ -127,7 +129,6 @@ fn render_network_rules(sb: &mut String, network: &NetworkAccess) -> fmt::Result
         return Ok(());
     }
 
-    // Outbound TCP: deny everything, then allow only proxy loopback ports.
     if network.restrict_connect_tcp {
         sb.push_str("(deny network-outbound)\n");
         for port in &network.connect_tcp_ports {
@@ -138,7 +139,6 @@ fn render_network_rules(sb: &mut String, network: &NetworkAccess) -> fmt::Result
         }
     }
 
-    // TCP binding/listening.
     if network.restrict_bind_tcp {
         sb.push_str("(deny network-bind)\n");
         sb.push_str("(deny network-inbound)\n");
@@ -148,11 +148,8 @@ fn render_network_rules(sb: &mut String, network: &NetworkAccess) -> fmt::Result
         sb.push_str("(allow network-inbound (local tcp \"localhost:*\"))\n");
     }
 
-    // Unix sockets.
     match &network.unix_socket_access {
-        UnixSocketAccess::Unrestricted => {
-            // No additional Unix socket rules.
-        }
+        UnixSocketAccess::Unrestricted => {}
         UnixSocketAccess::AllowPaths(paths) if paths.is_empty() => {
             sb.push_str("(deny network*)\n");
         }
@@ -175,10 +172,6 @@ fn render_network_rules(sb: &mut String, network: &NetworkAccess) -> fmt::Result
     Ok(())
 }
 
-/// Escape special characters in an SBPL literal string.
-///
-/// SBPL literals are not Scheme strings — they contain raw characters.
-/// The following must be escaped: `"`, `\`, `(`, `)`, and newlines.
 fn escape_sbpl_literal(path: &str) -> String {
     let mut escaped = String::with_capacity(path.len());
     for ch in path.chars() {
@@ -199,11 +192,9 @@ fn take_sandbox_error(errorbuf: *mut libc::c_char) -> String {
         return "sandbox_init failed without an error message".to_string();
     }
 
-    // SAFETY: sandbox_init returns a NULL-terminated error buffer on failure.
     let message = unsafe { CStr::from_ptr(errorbuf) }
         .to_string_lossy()
         .into_owned();
-    // SAFETY: errorbuf was allocated by sandbox_init for this API.
     unsafe { ffi::sandbox_free_error(errorbuf) };
     message
 }
