@@ -147,7 +147,10 @@ fn add_path_rules(ruleset: &OwnedFd, paths: &[PathBuf], access: u64, label: &str
     for path in paths {
         let fd = match open_path(path) {
             Ok(fd) => fd,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    || error.kind() == io::ErrorKind::PermissionDenied =>
+            {
                 log::debug!(
                     "landlock: {label} path {} missing, skipping",
                     path.display()
