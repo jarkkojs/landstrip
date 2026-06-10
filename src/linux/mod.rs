@@ -29,12 +29,15 @@ pub(crate) fn execute(policy: &AccessPolicy, tool: &OsStr, args: &[OsString]) ->
         log::debug!("{engine}: Unix socket policy enabled");
     }
 
-    if !unrestricted_network
+    let needs_fs_broker = seccomp::needs_filesystem_broker(policy);
+    let needs_network_broker = !unrestricted_network
         && (network.local_tcp_bind
             || !network.connect_tcp_ports.is_empty()
-            || seccomp::needs_unix_socket_broker(&network.unix_socket_access))
-    {
-        let status = seccomp::run_network_broker(policy, landlock_features, tool, args)?;
+            || seccomp::needs_unix_socket_broker(&network.unix_socket_access));
+
+    if needs_network_broker {
+        let status =
+            seccomp::run_network_broker(policy, landlock_features, tool, args, needs_fs_broker)?;
         process::exit(status);
     }
 
@@ -44,6 +47,7 @@ pub(crate) fn execute(policy: &AccessPolicy, tool: &OsStr, args: &[OsString]) ->
         let filter = seccomp::network_filter(NetworkFilter {
             notify_bind: false,
             notify_connect: false,
+            notify_filesystem: false,
             unix_sockets: seccomp::unix_socket_filter(&network.unix_socket_access),
         })?;
         filter.load()?;

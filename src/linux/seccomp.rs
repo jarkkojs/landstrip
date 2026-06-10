@@ -16,7 +16,7 @@ use super::fd::close_inherited_fds;
 use super::landlock::{LandlockFeatures, enforce_access_policy};
 use crate::error::{Error, Result};
 use crate::paths::normalize_path;
-use crate::policy::{AccessPolicy, UnixSocketAccess};
+use crate::policy::{AccessPolicy, ReadAccess, UnixSocketAccess};
 use nix::errno::Errno;
 use nix::fcntl::{FcntlArg, fcntl};
 use nix::poll::{PollFd, PollFlags, poll};
@@ -29,6 +29,7 @@ use seccompiler::{
     SeccompRule, TargetArch,
 };
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{IoSlice, IoSliceMut};
@@ -103,6 +104,7 @@ pub(super) fn run_network_broker(
     landlock_features: LandlockFeatures,
     tool: &OsStr,
     args: &[OsString],
+    notify_filesystem: bool,
 ) -> Result<i32> {
     let notify_unix_sockets = needs_unix_socket_broker(&policy.network_access.unix_socket_access);
     let notify_bind = policy.network_access.local_tcp_bind || notify_unix_sockets;
@@ -112,6 +114,7 @@ pub(super) fn run_network_broker(
     let filters = network_filter(NetworkFilter {
         notify_bind,
         notify_connect,
+        notify_filesystem,
         unix_sockets,
     })?;
     let syscalls = NotificationSyscalls::new();
@@ -160,7 +163,7 @@ pub(super) fn run_network_broker(
             drop(parent);
             let notify_fd = notify.as_raw_fd();
 
-            supervise_child(policy, landlock_features, child, notify_fd, &syscalls)
+            supervise_child(policy, landlock_features, child, notify_fd, &syscalls, notify_filesystem)
         }
     }
 }
@@ -171,7 +174,9 @@ fn supervise_child(
     child: Pid,
     notify_fd: RawFd,
     syscalls: &NotificationSyscalls,
+    notify_filesystem: bool,
 ) -> Result<i32> {
+    let mut fs_seen = HashSet::new();
     loop {
         loop {
             match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
@@ -215,7 +220,14 @@ fn supervise_child(
         }
 
         let request = receive_notification(notify_fd)?;
-        let response = handle_notification(policy, landlock_features, &request, syscalls);
+        let response = handle_notification(
+            policy,
+            landlock_features,
+            &request,
+            syscalls,
+            notify_filesystem,
+            &mut fs_seen,
+        );
 
         validate_notification_id(notify_fd, request.id)?;
         if let Err(source) = respond_notification(notify_fd, response) {
@@ -240,12 +252,18 @@ fn handle_notification(
     landlock_features: LandlockFeatures,
     request: &libc::seccomp_notif,
     syscalls: &NotificationSyscalls,
+    notify_filesystem: bool,
+    fs_seen: &mut HashSet<PathBuf>,
 ) -> libc::seccomp_notif_resp {
     let syscall = i64::from(request.data.nr);
     let result = if syscall == syscalls.bind {
         handle_bind(policy, request)
     } else if syscall == syscalls.connect {
         handle_connect(policy, landlock_features, request)
+    } else if notify_filesystem && syscall == syscalls.openat {
+        handle_openat(policy, request, fs_seen)
+    } else if notify_filesystem && syscall == syscalls.fstatat {
+        handle_fstatat(policy, request, fs_seen)
     } else {
         Ok(NotificationResult::Continue)
     };
@@ -664,13 +682,16 @@ pub(super) fn network_filter(config: NetworkFilter) -> Result<NetworkFilters> {
     let eafnosupport =
         u32::try_from(libc::EAFNOSUPPORT).map_err(|_| Error::system("invalid address"))?;
     let errno = build_filter(errno_rules, SeccompAction::Errno(eafnosupport))?;
-    let notify = if config.notify_bind || config.notify_connect {
+    let notify = if config.notify_bind || config.notify_connect || config.notify_filesystem {
         let mut notify_syscalls = Vec::new();
         if config.notify_bind {
             notify_syscalls.push(syscalls.bind);
         }
         if config.notify_connect {
             notify_syscalls.push(syscalls.connect);
+        }
+        if config.notify_filesystem {
+            notify_syscalls.extend(syscalls.filesystem_syscalls());
         }
         Some(build_notify_filter(&notify_syscalls)?)
     } else {
@@ -848,6 +869,10 @@ pub(super) fn needs_unix_socket_broker(access: &UnixSocketAccess) -> bool {
     matches!(access, UnixSocketAccess::AllowPaths(paths) if !paths.is_empty())
 }
 
+pub(super) fn needs_filesystem_broker(policy: &AccessPolicy) -> bool {
+    !policy.write_roots.is_empty() || !matches!(policy.read_access, ReadAccess::Unrestricted)
+}
+
 pub(super) fn unix_socket_filter(access: &UnixSocketAccess) -> UnixSocketFilter {
     match access {
         UnixSocketAccess::Unrestricted => UnixSocketFilter::Unrestricted,
@@ -860,6 +885,7 @@ pub(super) fn unix_socket_filter(access: &UnixSocketAccess) -> UnixSocketFilter 
 pub(super) struct NetworkFilter {
     pub(super) notify_bind: bool,
     pub(super) notify_connect: bool,
+    pub(super) notify_filesystem: bool,
     pub(super) unix_sockets: UnixSocketFilter,
 }
 
@@ -942,6 +968,148 @@ fn create_path(path: &Path) -> PathBuf {
     match path.file_name() {
         Some(name) => parent.join(name),
         None => parent,
+    }
+}
+
+fn handle_openat(
+    policy: &AccessPolicy,
+    request: &libc::seccomp_notif,
+    fs_seen: &mut HashSet<PathBuf>,
+) -> SysResult<NotificationResult> {
+    let dirfd = request.data.args[0] as i32;
+    let path_ptr = usize::try_from(request.data.args[1]).map_err(|_| BrokerError::BadAddress)?;
+    let flags = i32::try_from(request.data.args[2]).map_err(|_| BrokerError::InvalidAddress)?;
+    let pid = Pid::from_raw(i32::try_from(request.pid).map_err(|_| BrokerError::InvalidAddress)?);
+
+    let Some(path) = read_child_path(pid, path_ptr)? else {
+        return Ok(NotificationResult::Continue);
+    };
+
+    let resolved = resolve_child_path(pid, dirfd, &path)?;
+    let wants_write = (flags & (libc::O_WRONLY | libc::O_RDWR | libc::O_CREAT | libc::O_TRUNC)) != 0;
+    let wants_read = (flags & libc::O_WRONLY) == 0;
+
+    if wants_write && check_fs_write(policy, &resolved).is_err() {
+        emit_fs_denial(&resolved, fs_seen);
+        return Err(BrokerError::PolicyDenied);
+    }
+    if wants_read && check_fs_read(policy, &resolved).is_err() {
+        emit_fs_denial(&resolved, fs_seen);
+        return Err(BrokerError::PolicyDenied);
+    }
+
+    Ok(NotificationResult::Continue)
+}
+
+fn handle_fstatat(
+    policy: &AccessPolicy,
+    request: &libc::seccomp_notif,
+    fs_seen: &mut HashSet<PathBuf>,
+) -> SysResult<NotificationResult> {
+    let dirfd = request.data.args[0] as i32;
+    let path_ptr = usize::try_from(request.data.args[1]).map_err(|_| BrokerError::BadAddress)?;
+    let pid = Pid::from_raw(i32::try_from(request.pid).map_err(|_| BrokerError::InvalidAddress)?);
+
+    let Some(path) = read_child_path(pid, path_ptr)? else {
+        return Ok(NotificationResult::Continue);
+    };
+
+    let resolved = resolve_child_path(pid, dirfd, &path)?;
+    if check_fs_read(policy, &resolved).is_err() {
+        emit_fs_denial(&resolved, fs_seen);
+        return Err(BrokerError::PolicyDenied);
+    }
+
+    Ok(NotificationResult::Continue)
+}
+
+fn read_child_path(pid: Pid, path_ptr: usize) -> SysResult<Option<PathBuf>> {
+    if path_ptr == 0 {
+        return Ok(None);
+    }
+
+    let buf = read_child_string(pid, path_ptr, libc::PATH_MAX as usize)?;
+    let path = OsStr::from_bytes(&buf);
+    if path.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(PathBuf::from(path)))
+}
+
+fn read_child_string(pid: Pid, addr: usize, max_len: usize) -> SysResult<Vec<u8>> {
+    let mut buf = vec![0_u8; max_len];
+    let mut local = [IoSliceMut::new(&mut buf)];
+    let target = [RemoteIoVec {
+        base: addr,
+        len: max_len,
+    }];
+    let n = process_vm_readv(pid, &mut local, &target)
+        .map_err(|error| BrokerError::SystemCall {
+            errno: error as i32,
+        })?;
+
+    let null_pos = buf[..n].iter().position(|b| *b == 0).unwrap_or(n);
+    buf.truncate(null_pos);
+    Ok(buf)
+}
+
+fn resolve_child_path(pid: Pid, dirfd: i32, path: &Path) -> SysResult<PathBuf> {
+    if path.is_absolute() {
+        return Ok(normalize_path(path));
+    }
+
+    if dirfd == libc::AT_FDCWD {
+        let cwd = fs::read_link(format!("/proc/{pid}/cwd")).map_err(|error| {
+            BrokerError::SystemCall {
+                errno: error.raw_os_error().unwrap_or(libc::EIO),
+            }
+        })?;
+        return Ok(normalize_path(&cwd.join(path)));
+    }
+
+    // dirfd is a file descriptor; resolve relative to /proc/<pid>/fd/<dirfd>
+    let dir_path =
+        fs::read_link(format!("/proc/{pid}/fd/{dirfd}")).map_err(|error| BrokerError::SystemCall {
+            errno: error.raw_os_error().unwrap_or(libc::EBADF),
+        })?;
+    Ok(normalize_path(&dir_path.join(path)))
+}
+
+fn check_fs_read(policy: &AccessPolicy, path: &Path) -> SysResult<()> {
+    match &policy.read_access {
+        ReadAccess::Unrestricted => Ok(()),
+        ReadAccess::AllowRoots(roots) => {
+            if roots.iter().any(|root| path == root || path.starts_with(root)) {
+                return Ok(());
+            }
+            Err(BrokerError::PolicyDenied)
+        }
+    }
+}
+
+fn check_fs_write(policy: &AccessPolicy, path: &Path) -> SysResult<()> {
+    if policy.write_roots.is_empty() {
+        return Err(BrokerError::PolicyDenied);
+    }
+
+    if policy
+        .write_roots
+        .iter()
+        .any(|root| path == root || path.starts_with(root))
+    {
+        return Ok(());
+    }
+
+    Err(BrokerError::PolicyDenied)
+}
+
+fn emit_fs_denial(path: &Path, seen: &mut HashSet<PathBuf>) {
+    if seen.insert(path.to_path_buf()) {
+        eprintln!("category: policy");
+        eprintln!("type: filesystem");
+        eprintln!("file: {}", path.display());
+        eprintln!("message: access denied");
     }
 }
 
@@ -1082,6 +1250,8 @@ struct NotificationSyscalls {
     connect: i64,
     socket: i64,
     socketpair: i64,
+    openat: i64,
+    fstatat: i64,
 }
 
 impl NotificationSyscalls {
@@ -1091,7 +1261,13 @@ impl NotificationSyscalls {
             connect: libc::SYS_connect,
             socket: libc::SYS_socket,
             socketpair: libc::SYS_socketpair,
+            openat: libc::SYS_openat,
+            fstatat: libc::SYS_newfstatat,
         }
+    }
+
+    fn filesystem_syscalls(&self) -> [i64; 2] {
+        [self.openat, self.fstatat]
     }
 }
 
