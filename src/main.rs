@@ -19,7 +19,7 @@ mod platform;
 mod policy;
 mod traversal;
 
-use crate::cli::{Cli, PolicyFormat, parse_cli};
+use crate::cli::{Cli, parse_cli};
 use crate::config::load_settings;
 use crate::error::{Error, Result};
 use crate::policy::resolve_policy;
@@ -29,7 +29,7 @@ fn main() {
     let cli = match parse_cli() {
         Ok(cli) => cli,
         Err(error) => {
-            print_error_response(&error, PolicyFormat::Json);
+            print_error_response(&error);
             process::exit(if matches!(error, Error::Usage(_)) {
                 2
             } else {
@@ -43,24 +43,27 @@ fn main() {
             eprintln!("{error}");
             process::exit(2);
         }
-        print_error_response(&error, cli.output_format);
+        print_error_response(&error);
         process::exit(1);
     }
 }
 
-fn print_error_response(error: &Error, output_format: PolicyFormat) {
+fn print_error_response(error: &Error) {
     let Some(response) = error.response() else {
         return;
     };
 
-    let result: Option<String> = match output_format {
-        PolicyFormat::Json => serde_json::to_string(&response).ok(),
-        PolicyFormat::Yaml => serde_yml::to_string(&response).ok(),
-    };
-
-    if let Some(text) = result {
-        eprintln!("{text}");
+    eprintln!("category: {}", response.category);
+    if let Some(file) = &response.file {
+        eprintln!("file: {file}");
     }
+    if let Some(program) = &response.program {
+        eprintln!("program: {program}");
+    }
+    if let Some(e_type) = response.r#type {
+        eprintln!("type: {e_type}");
+    }
+    eprintln!("message: {}", response.message);
 }
 
 fn run_with_cli(cli: &Cli) -> Result<()> {
@@ -73,7 +76,7 @@ fn run_with_cli(cli: &Cli) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     log::debug!("cli: cwd: {}", cwd.display());
-    let settings = load_settings(&cli.policy_paths, cli.input_format)?;
+    let settings = load_settings(&cli.policy_paths, cli.format)?;
     let policy = resolve_policy(&settings.filesystem, &settings.network, &cwd)?;
 
     platform::execute(&policy, &cli.tool, &cli.tool_args)?;

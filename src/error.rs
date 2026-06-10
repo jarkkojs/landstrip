@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
-use serde::Serialize;
 use std::error::Error as StdError;
 use std::ffi::OsString;
 use std::fmt;
@@ -184,16 +183,12 @@ impl Error {
     }
 }
 
-#[derive(Serialize)]
 pub(crate) struct Response<'a> {
-    category: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    file: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    program: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    r#type: Option<&'a str>,
-    message: &'a str,
+    pub(crate) category: &'static str,
+    pub(crate) file: Option<String>,
+    pub(crate) program: Option<String>,
+    pub(crate) r#type: Option<&'a str>,
+    pub(crate) message: &'a str,
 }
 
 impl fmt::Display for Error {

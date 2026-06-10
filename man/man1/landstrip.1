@@ -7,8 +7,7 @@
 .Sh SYNOPSIS
 .Nm
 .Op Fl -debug
-.Op Fl -input-format Ar format
-.Op Fl -output-format Ar format
+.Op Fl -format Ar format
 .Op Fl p Ar policy
 .Op Fl -policy Ar policy
 .Ar command
@@ -31,15 +30,8 @@ uses. Unknown fields are ignored.
 .Bl -tag -width Ds
 .It Fl -debug
 Enable debug logging.
-.It Fl -input-format Ar format
-Select the policy input format. The accepted values are
-.Va json
-and
-.Va yaml .
-The default is
-.Va json .
-.It Fl -output-format Ar format
-Select the error output format. The accepted values are
+.It Fl -format Ar format
+Select the policy format. The accepted values are
 .Va json
 and
 .Va yaml .
@@ -76,7 +68,7 @@ The relevant policy shape is:
 .Ed
 .Pp
 When
-.Fl -input-format Ar yaml
+.Fl -format Ar yaml
 is used, path fields can also be written as one statement per non-empty line:
 .Bd -literal -offset indent
 filesystem:
@@ -183,12 +175,14 @@ allowlists; unrestricted read policy is rejected. AppContainer profiles and ACL
 grants can persist after the sandboxed process exits.
 .Sh OUTPUT
 .Nm
-prints landstrip failures as one compact object on standard error, formatted as
-JSON by default. Use
-.Fl -output-format Ar yaml
-for YAML output.
+prints landstrip failures as
+.Sq field: value
+lines on standard error, one line per field.
+Fields with no value are omitted.
 .Bd -literal -offset indent
-{"category":"policy","file":"policy.json","message":"expected value at line 1 column 1"}
+category: policy
+file: policy.json
+message: expected value at line 1 column 1
 .Ed
 The
 .Va type
@@ -215,9 +209,9 @@ field is present when
 .Nm
 could not start or encode a tool.
 .Pp
-Usage errors are not JSON responses; they are printed on standard error and
-exit with status 2. Logs and sandboxed command output are not part of the JSON
-response. Normal successful command execution does not print a JSON response
+Usage errors are not formatted responses; they are printed on standard error and
+exit with status 2. Logs and sandboxed command output are not part of the formatted
+response. Normal successful command execution does not print a response
 because standard error belongs to landstrip and standard output belongs to the
 sandboxed command.
 .Sh EXIT STATUS
@@ -230,7 +224,7 @@ and returns that command's exit status. When seccomp user notification is needed
 supervises the sandboxed child and exits with the child's status. If policy
 loading or sandbox setup fails,
 .Nm
-prints a JSON response and exits non-zero.
+prints a formatted response and exits non-zero.
 Usage errors exit with status 2.
 .Sh AUTHORS
 .An Jarkko Sakkinen Aq Mt jarkko.sakkinen@iki.fi

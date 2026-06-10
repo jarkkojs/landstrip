@@ -35,14 +35,12 @@ until Windows enforcement exists.
 
 ## Policy Format
 
-JSON is the default policy format. Use `--input-format yaml` for YAML policy files or
+JSON is the default policy format. Use `--format yaml` for YAML policy files or
 YAML read from standard input.
 
 ```sh
-landstrip --input-format yaml -p policy.yaml cargo test
+landstrip --format yaml -p policy.yaml cargo test
 ```
-
-Error output is JSON by default. Use `--output-format yaml` for YAML error output.
 
 YAML path fields can use normal lists or one statement per line:
 
@@ -78,19 +76,25 @@ On Linux and macOS, `allowNetwork` disables landstrip network enforcement while
 leaving filesystem policy enforcement in place. Windows rejects unrestricted
 network policies until Windows network support exists.
 
-## JSON Output
+## Error Output
 
-Failures reported by `landstrip` are printed as one compact JSON object on
-standard error. This covers policy, tool launch, platform, and system
-errors. Usage errors are not JSON responses; they remain on standard error and
+Failures reported by `landstrip` are printed as `field: value` lines on
+standard error, one line per field. Fields with no value are omitted.
+This covers policy, tool launch, platform, and system
+errors. Usage errors are not formatted responses; they remain on standard error and
 exit with status 2.
 
-```json
-{"category":"policy","file":"policy.json","message":"expected value at line 1 column 1"}
+```
+category: policy
+file: policy.json
+message: expected value at line 1 column 1
 ```
 
-```json
-{"category":"tool","program":"cargo","type":"launch","message":"No such file or directory"}
+```
+category: tool
+program: cargo
+type: launch
+message: No such file or directory
 ```
 
 The `category` field is one of `policy`, `tool`, `platform`, or `system`. The
@@ -100,8 +104,8 @@ The `category` field is one of `policy`, `tool`, `platform`, or `system`. The
 `network`, or `platform` for policy errors, or `launch` (failed to start
 the tool) or `encoding` (failed to encode the command line) for tool errors.
 
-Logs and sandboxed tool output are not part of the JSON response. Normal
-successful tool execution does not print a landstrip JSON response because
+Logs and sandboxed tool output are not part of the response. Normal
+successful tool execution does not print a landstrip response because
 standard error belongs to landstrip; standard output belongs to the sandboxed tool.
 
 ## Development
