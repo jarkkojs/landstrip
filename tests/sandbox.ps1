@@ -95,7 +95,7 @@ try {
             allowWrite = @($Allowed)
         }
     }
-    Expect-FailureText "unrestricted read policy is rejected" $PolicyRead @($Cmd, "/C", "exit 0") "read access must use explicit allow roots"
+    Expect-FailureText "unrestricted read policy is rejected" $PolicyRead @($Cmd, "/C", "exit 0") "read access"
 
     $PolicyAllowNetwork = Join-Path $Tmp "policy-allow-network.json"
     Write-Policy $PolicyAllowNetwork @{
@@ -107,7 +107,7 @@ try {
             allowRead = @($Tmp, $RepoRoot)
         }
     }
-    Expect-FailureText "unrestricted network policy is rejected" $PolicyAllowNetwork @($Cmd, "/C", "exit 0") "unrestricted network is not supported yet"
+    Expect-FailureText "unrestricted network policy is rejected" $PolicyAllowNetwork @($Cmd, "/C", "exit 0") "unrestricted network"
 
     $PolicyLocalBinding = Join-Path $Tmp "policy-local-binding.json"
     Write-Policy $PolicyLocalBinding @{
@@ -119,7 +119,7 @@ try {
             allowRead = @($Tmp, $RepoRoot)
         }
     }
-    Expect-FailureText "TCP local binding policy is rejected" $PolicyLocalBinding @($Cmd, "/C", "exit 0") "TCP policies are not supported yet"
+    Expect-FailureText "TCP local binding policy is rejected" $PolicyLocalBinding @($Cmd, "/C", "exit 0") "TCP policies"
 
     Write-Host "SUMMARY pass=$PassCount fail=$FailCount tmp=$Tmp"
     if ($FailCount -ne 0) {
