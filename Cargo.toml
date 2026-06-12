@@ -27,7 +27,7 @@ seccompiler = "0.5"
 nix = { version = "0.30", features = ["fs", "ioctl", "poll", "process", "socket", "uio"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.60", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
