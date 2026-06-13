@@ -292,28 +292,56 @@ fn supervise_child(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum FilesystemOperation {
+    Read,
+    Write,
+}
+
+impl FilesystemOperation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct FilesystemDenial {
+    path: PathBuf,
+    operation: FilesystemOperation,
+}
+
 #[derive(Default)]
 struct FilesystemDenials {
-    seen: HashSet<PathBuf>,
-    pending: Vec<PathBuf>,
+    seen: HashSet<FilesystemDenial>,
+    pending: Vec<FilesystemDenial>,
 }
 
 impl FilesystemDenials {
-    fn record(&mut self, path: &Path) {
-        if self.seen.insert(path.to_path_buf()) {
-            self.pending.push(path.to_path_buf());
+    fn record(&mut self, path: &Path, operation: FilesystemOperation) {
+        let denial = FilesystemDenial {
+            path: path.to_path_buf(),
+            operation,
+        };
+        if self.seen.insert(denial.clone()) {
+            self.pending.push(denial);
         }
     }
 
     fn emit(&self, status: WaitStatus) -> i32 {
         let code = exit_code(status);
-        if code != 0 {
-            for path in &self.pending {
-                Error::new(ErrorKind::AccessDenied)
-                    .with_type("filesystem")
-                    .with_file(path.clone())
-                    .emit();
-            }
+        for denial in self
+            .pending
+            .iter()
+            .filter(|denial| code != 0 || denial.operation == FilesystemOperation::Write)
+        {
+            Error::new(ErrorKind::AccessDenied)
+                .with_type("filesystem")
+                .with_operation(denial.operation.as_str())
+                .with_file(denial.path.clone())
+                .emit();
         }
         code
     }
@@ -1077,12 +1105,12 @@ fn handle_openat(
 
     if wants_write && check_fs_write(policy, &resolved).is_err() {
         if reports_write {
-            fs_denials.record(&resolved);
+            fs_denials.record(&resolved, FilesystemOperation::Write);
         }
         return Err(BrokerError::PolicyDenied);
     }
     if wants_read && check_fs_read(policy, &resolved).is_err() {
-        fs_denials.record(&resolved);
+        fs_denials.record(&resolved, FilesystemOperation::Read);
         return Err(BrokerError::PolicyDenied);
     }
 

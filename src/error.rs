@@ -40,6 +40,7 @@ pub(crate) struct Error {
     pub(crate) kind: ErrorKind,
     pub(crate) r#type: Option<&'static str>,
     pub(crate) file: Option<PathBuf>,
+    pub(crate) operation: Option<&'static str>,
     pub(crate) program: Option<OsString>,
     pub(crate) source: Option<String>,
     pub(crate) cause: Option<Cause>,
@@ -64,6 +65,7 @@ impl Error {
             kind,
             r#type: None,
             file: None,
+            operation: None,
             program: None,
             source: None,
             cause: None,
@@ -89,6 +91,9 @@ impl Error {
         }
         if let Some(ref value) = self.file {
             eprintln!("file: {}", value.display());
+        }
+        if let Some(value) = self.operation {
+            eprintln!("operation: {value}");
         }
         if let Some(ref value) = self.program {
             eprintln!("program: {}", value.to_string_lossy());
@@ -141,6 +146,11 @@ impl Error {
 
     pub(crate) fn with_file(mut self, file: PathBuf) -> Self {
         self.file = Some(file);
+        self
+    }
+
+    pub(crate) fn with_operation(mut self, operation: &'static str) -> Self {
+        self.operation = Some(operation);
         self
     }
 

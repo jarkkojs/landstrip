@@ -89,6 +89,31 @@ expect_success_no_access_denied() {
     fi
 }
 
+expect_success_access_denied() {
+    name=$1
+    expected_file=$2
+    expected_operation=$3
+    shift 3
+    expected_real=$(CDPATH= cd -- "$(dirname -- "$expected_file")" && pwd -P)/$(basename -- "$expected_file")
+    set +e
+    output=$({ "$@"; } 2>&1)
+    status=$?
+    set -e
+    has_expected_file=0
+    if printf '%s\n' "$output" | grep -F -q \
+        -e "file: $expected_file" \
+        -e "file: $expected_real"; then
+        has_expected_file=1
+    fi
+    if [ "$status" -eq 0 ] && [ "$has_expected_file" -eq 1 ] && \
+        printf '%s\n' "$output" | grep -F -q 'reason: AccessDenied' && \
+        printf '%s\n' "$output" | grep -F -q "operation: $expected_operation"; then
+        pass "$name"
+    else
+        fail "$name" "status=$status output=$output"
+    fi
+}
+
 expect_failure_access_denied() {
     name=$1
     expected_file=$2
@@ -218,6 +243,13 @@ test_ok "sysctl read permits uname" "$policy" "$sandbox_shell" -c 'uname -s'
 policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s/allowed"],"denyRead":["/"],"allowRead":["/"]}}' "$tmp")
 test_ok "allowWrite permits configured root" "$policy" "$sandbox_shell" -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ "$tmp/allowed"
 test_fail "allowWrite denies other root" "$policy" "$sandbox_shell" -c ': > "$1/nope.txt"' _ "$tmp/denied"
+
+policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["/dev/null"],"denyRead":["/"],"allowRead":["/"]}}')
+test_ok "dev null read and write are permitted" "$policy" "$sandbox_shell" -c 'cat /dev/null >/dev/null'
+
+policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s/allowed"],"denyRead":["/"],"allowRead":["/"]}}' "$tmp")
+expect_success_access_denied "successful write denial is reported" "/dev/null" write \
+    "$bin" -p "$policy" "$sandbox_shell" -c 'cat /dev/null >/dev/null; true'
 
 policy_yaml=$tmp/policy-fs.yaml
 printf '%s\n' \

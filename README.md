@@ -96,17 +96,19 @@ type: launch
 source: No such file or directory
 ```
 
-The `reason` field describes the error kind (e.g. `Other`, `LaunchFailed`,
-`SetupFailed`, `Usage`). The `file` field is present when a policy error is tied
-to a policy file. The `program` field is present when landstrip could not start
-or encode a tool. The `type` field is present for policy or tool errors and is
-either `filesystem`, `network`, or `platform` for policy errors, or `launch`
-(failed to start the tool) or `encoding` (failed to encode the command line) for
-tool errors.
+The `reason` field describes the error kind (e.g. `Other`, `AccessDenied`,
+`LaunchFailed`, `SetupFailed`, `Usage`). The `file` field is present when a
+policy error is tied to a policy file or filesystem access denial. The `program`
+field is present when landstrip could not start or encode a tool. The `type`
+field is present for policy or tool errors and is either `filesystem`, `network`,
+or `platform` for policy errors, or `launch` (failed to start the tool) or
+`encoding` (failed to encode the command line) for tool errors. Filesystem access
+denials may include `operation: read` or `operation: write`.
 
 Logs and sandboxed tool output are not part of the response. Normal successful
-tool execution does not print a landstrip response because standard error
-belongs to landstrip; standard output belongs to the sandboxed tool.
+tool execution does not print a landstrip response unless a write denial was
+observed, because standard error belongs to landstrip; standard output belongs
+to the sandboxed tool.
 
 ## Development
 
