@@ -41,23 +41,29 @@ impl ErrorFd {
 
 #[cfg(unix)]
 fn write_error_line(fd: i32, line: &[u8]) {
-    use nix::errno::Errno;
-    use nix::unistd::write;
-    use std::os::fd::BorrowedFd;
-
     let mut remaining = line;
     while !remaining.is_empty() {
-        // SAFETY: fd is supplied by the caller and borrowed only for this write call.
-        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-        match write(borrowed, remaining) {
-            Ok(0) => return,
-            Ok(written) => remaining = &remaining[written..],
-            Err(Errno::EINTR) => continue,
-            Err(error) => {
-                log::debug!("error fd write fd={fd} errno={}", error as i32);
-                return;
-            }
+        // SAFETY: write(2) copies bytes from the live slice pointer.
+        let written = unsafe { libc::write(fd, remaining.as_ptr().cast(), remaining.len()) };
+        if written == 0 {
+            return;
         }
+        if written < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            log::debug!(
+                "error fd write fd={fd} errno={}",
+                error.raw_os_error().unwrap_or(0)
+            );
+            return;
+        }
+
+        let Ok(written) = usize::try_from(written) else {
+            return;
+        };
+        remaining = &remaining[written..];
     }
 }
 
@@ -66,9 +72,10 @@ fn close_error_fd(fd: i32) {
     // SAFETY: close(2) copies the scalar file descriptor argument.
     let rc = unsafe { libc::close(fd) };
     if rc != 0 {
+        let error = std::io::Error::last_os_error();
         log::debug!(
             "error fd close fd={fd} errno={}",
-            nix::errno::Errno::last() as i32
+            error.raw_os_error().unwrap_or(0)
         );
     }
 }
