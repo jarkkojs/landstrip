@@ -63,7 +63,7 @@ nix::ioctl_readwrite!(
 nix::ioctl_write_ptr!(seccomp_notif_id_valid, SECCOMP_IOC_MAGIC, 2, u64);
 
 #[repr(C)]
-struct SockFprog {
+struct SockFilterProg {
     len: libc::c_ushort,
     filter: *const seccompiler::sock_filter,
 }
@@ -221,12 +221,12 @@ fn supervise_child(
     syscalls: &NotificationSyscalls,
     notify_filesystem: bool,
 ) -> Result<i32> {
-    let mut fs_seen = HashSet::new();
+    let mut fs_denials = FilesystemDenials::default();
     loop {
         loop {
             match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
                 Ok(WaitStatus::StillAlive) => break,
-                Ok(status) => return Ok(exit_code(status)),
+                Ok(status) => return Ok(fs_denials.emit(status)),
                 Err(Errno::EINTR) => continue,
                 Err(error) => {
                     return Err(system_errno(error as i32));
@@ -255,7 +255,7 @@ fn supervise_child(
         if revents.intersects(PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL) {
             loop {
                 match waitpid(child, None) {
-                    Ok(status) => return Ok(exit_code(status)),
+                    Ok(status) => return Ok(fs_denials.emit(status)),
                     Err(Errno::EINTR) => continue,
                     Err(error) => {
                         return Err(system_errno(error as i32));
@@ -271,7 +271,7 @@ fn supervise_child(
             &request,
             syscalls,
             notify_filesystem,
-            &mut fs_seen,
+            &mut fs_denials,
         );
 
         validate_notification_id(notify_fd, request.id)?;
@@ -279,7 +279,7 @@ fn supervise_child(
             loop {
                 match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
                     Ok(WaitStatus::StillAlive) => break,
-                    Ok(status) => return Ok(exit_code(status)),
+                    Ok(status) => return Ok(fs_denials.emit(status)),
                     Err(Errno::EINTR) => continue,
                     Err(error) => {
                         return Err(system_errno(error as i32));
@@ -292,13 +292,40 @@ fn supervise_child(
     }
 }
 
+#[derive(Default)]
+struct FilesystemDenials {
+    seen: HashSet<PathBuf>,
+    pending: Vec<PathBuf>,
+}
+
+impl FilesystemDenials {
+    fn record(&mut self, path: &Path) {
+        if self.seen.insert(path.to_path_buf()) {
+            self.pending.push(path.to_path_buf());
+        }
+    }
+
+    fn emit(&self, status: WaitStatus) -> i32 {
+        let code = exit_code(status);
+        if code != 0 {
+            for path in &self.pending {
+                Error::new(ErrorKind::AccessDenied)
+                    .with_type("filesystem")
+                    .with_file(path.clone())
+                    .emit();
+            }
+        }
+        code
+    }
+}
+
 fn handle_notification(
     policy: &AccessPolicy,
     landlock_features: LandlockFeatures,
     request: &libc::seccomp_notif,
     syscalls: &NotificationSyscalls,
     notify_filesystem: bool,
-    fs_seen: &mut HashSet<PathBuf>,
+    fs_denials: &mut FilesystemDenials,
 ) -> libc::seccomp_notif_resp {
     let syscall = i64::from(request.data.nr);
     let result = if syscall == syscalls.bind {
@@ -306,9 +333,9 @@ fn handle_notification(
     } else if syscall == syscalls.connect {
         handle_connect(policy, landlock_features, request)
     } else if notify_filesystem && syscall == syscalls.openat {
-        handle_openat(policy, request, fs_seen)
+        handle_openat(policy, request, fs_denials)
     } else if notify_filesystem && syscall == syscalls.fstatat {
-        handle_fstatat(policy, request, fs_seen)
+        handle_fstatat(policy, request)
     } else {
         Ok(NotificationResult::Continue)
     };
@@ -851,7 +878,7 @@ fn load_program(program: &BpfProgram, flags: libc::c_ulong) -> Result<Option<Own
 
     let len = libc::c_ushort::try_from(program.len())
         .map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
-    let filter = SockFprog {
+    let filter = SockFilterProg {
         len,
         filter: program.as_ptr(),
     };
@@ -1029,7 +1056,7 @@ fn create_path(path: &Path) -> PathBuf {
 fn handle_openat(
     policy: &AccessPolicy,
     request: &libc::seccomp_notif,
-    fs_seen: &mut HashSet<PathBuf>,
+    fs_denials: &mut FilesystemDenials,
 ) -> SysResult<NotificationResult> {
     // args[0] is dirfd: an i32 (including AT_FDCWD=-100) stored as u64.
     #[allow(clippy::cast_possible_truncation)]
@@ -1045,14 +1072,16 @@ fn handle_openat(
     let resolved = resolve_child_path(pid, dirfd, &path)?;
     let wants_write =
         (flags & (libc::O_WRONLY | libc::O_RDWR | libc::O_CREAT | libc::O_TRUNC)) != 0;
+    let reports_write = (flags & (libc::O_CREAT | libc::O_TRUNC | libc::O_APPEND)) != 0;
     let wants_read = (flags & libc::O_WRONLY) == 0;
 
     if wants_write && check_fs_write(policy, &resolved).is_err() {
-        emit_fs_denial(&resolved, fs_seen);
+        if reports_write {
+            fs_denials.record(&resolved);
+        }
         return Err(BrokerError::PolicyDenied);
     }
     if wants_read && check_fs_read(policy, &resolved).is_err() {
-        emit_fs_denial(&resolved, fs_seen);
         return Err(BrokerError::PolicyDenied);
     }
 
@@ -1062,7 +1091,6 @@ fn handle_openat(
 fn handle_fstatat(
     policy: &AccessPolicy,
     request: &libc::seccomp_notif,
-    fs_seen: &mut HashSet<PathBuf>,
 ) -> SysResult<NotificationResult> {
     // args[0] is dirfd: an i32 (including AT_FDCWD=-100) stored as u64.
     #[allow(clippy::cast_possible_truncation)]
@@ -1076,7 +1104,6 @@ fn handle_fstatat(
 
     let resolved = resolve_child_path(pid, dirfd, &path)?;
     if check_fs_read(policy, &resolved).is_err() {
-        emit_fs_denial(&resolved, fs_seen);
         return Err(BrokerError::PolicyDenied);
     }
 
@@ -1165,15 +1192,6 @@ fn check_fs_write(policy: &AccessPolicy, path: &Path) -> SysResult<()> {
     }
 
     Err(BrokerError::PolicyDenied)
-}
-
-fn emit_fs_denial(path: &Path, seen: &mut HashSet<PathBuf>) {
-    if seen.insert(path.to_path_buf()) {
-        Error::new(ErrorKind::AccessDenied)
-            .with_type("filesystem")
-            .with_file(path.to_path_buf())
-            .emit();
-    }
 }
 
 fn sockopt(fd: RawFd, level: libc::c_int, name: libc::c_int) -> SysResult<i32> {

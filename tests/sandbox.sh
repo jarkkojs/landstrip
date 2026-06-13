@@ -75,6 +75,20 @@ expect_failure() {
     fi
 }
 
+expect_success_no_access_denied() {
+    name=$1
+    shift
+    set +e
+    output=$({ "$@"; } 2>&1)
+    status=$?
+    set -e
+    if [ "$status" -eq 0 ] && ! printf '%s\n' "$output" | grep -q 'reason: AccessDenied'; then
+        pass "$name"
+    else
+        fail "$name" "status=$status output=$output"
+    fi
+}
+
 write_policy() {
     fmt=$1; shift
     file="$tmp/policy-next.json"
@@ -240,6 +254,11 @@ printf 'no\n' >"$tmp/read-no/data.txt"
 policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"denyRead":["/"],"allowRead":["%s/read-ok","/usr","/lib","/lib64","/bin","/sbin","/etc"]}}' "$tmp")
 test_ok "allowRead permits read in allowed path" "$policy" "$sandbox_shell" -c 'cat "$1/data.txt"' _ "$tmp/read-ok"
 test_fail "allowRead denies read in other path" "$policy" "$sandbox_shell" -c 'cat "$1/data.txt"' _ "$tmp/read-no"
+
+mkdir -p "$tmp/probe-denied/bin"
+policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"denyRead":["%s/probe-denied"]}}' "$tmp")
+expect_success_no_access_denied "successful PATH probe hides nonfatal denials" \
+    "$bin" -p "$policy" "$sandbox_shell" -c 'PATH="$1/probe-denied/bin:/bin:/usr/bin" ls /bin/sh' _ "$tmp"
 
 policy_fs=$(write_policy '{"filesystem":{"allowWrite":["%s/allowed"],"denyRead":["/"],"allowRead":["/"]}}' "$tmp")
 policy_net="$tmp/policy-net.json"
