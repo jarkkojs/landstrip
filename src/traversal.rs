@@ -2,7 +2,10 @@
 // Copyright (c) 2026 Jarkko Sakkinen
 
 use crate::error::Result;
+#[cfg(not(target_os = "macos"))]
 use crate::paths::normalize_roots;
+#[cfg(target_os = "macos")]
+use crate::paths::normalize_roots_lexically as normalize_roots;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};

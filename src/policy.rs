@@ -13,7 +13,11 @@
 
 use crate::config::{SandboxFilesystem, SandboxNetwork};
 use crate::error::{Error, ErrorKind, PolicyPort, Result};
-use crate::paths::{normalize_path, normalize_path_lexically, normalize_roots};
+use crate::paths::normalize_path_lexically;
+#[cfg(target_os = "macos")]
+use crate::paths::normalize_roots_lexically;
+#[cfg(not(target_os = "macos"))]
+use crate::paths::{normalize_path, normalize_roots};
 use crate::traversal::subtract_denied_roots;
 use std::env;
 use std::fs;
@@ -93,7 +97,7 @@ pub(crate) fn resolve_policy(
     } else {
         let mut read_roots = subtract_denied_roots(vec![PathBuf::from("/")], &read_deny)?;
         read_roots.extend(read_allow);
-        normalize_roots(&mut read_roots);
+        normalize_policy_roots(&mut read_roots);
         ReadAccess::AllowRoots(read_roots)
     };
 
@@ -170,15 +174,40 @@ fn resolve_paths(
             .bytes()
             .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b']'))
         {
-            resolved.extend(expand_glob_path(&path)?);
+            for path in expand_glob_path(&path)? {
+                push_path_variants(&mut resolved, &path);
+            }
         } else {
-            resolved.push(normalize_path(&path));
+            push_path_variants(&mut resolved, &path);
         }
     }
 
-    normalize_roots(&mut resolved);
+    normalize_policy_roots(&mut resolved);
 
     Ok(resolved)
+}
+
+#[cfg(target_os = "macos")]
+fn push_path_variants(paths: &mut Vec<PathBuf>, path: &Path) {
+    paths.push(normalize_path_lexically(path));
+    if let Ok(canonical) = fs::canonicalize(path) {
+        paths.push(normalize_path_lexically(&canonical));
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn push_path_variants(paths: &mut Vec<PathBuf>, path: &Path) {
+    paths.push(normalize_path(path));
+}
+
+#[cfg(target_os = "macos")]
+fn normalize_policy_roots(paths: &mut Vec<PathBuf>) {
+    normalize_roots_lexically(paths);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn normalize_policy_roots(paths: &mut Vec<PathBuf>) {
+    normalize_roots(paths);
 }
 fn resolve_sandbox_path(path: &str, base: &Path, home: Option<&Path>) -> Result<PathBuf> {
     if path.is_empty() {

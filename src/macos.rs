@@ -71,7 +71,8 @@ fn render_profile(policy: &AccessPolicy) -> std::result::Result<String, fmt::Err
 
 fn render_process_rules(sb: &mut String) -> fmt::Result {
     writeln!(sb, "(allow process-exec)")?;
-    writeln!(sb, "(allow process-fork)")
+    writeln!(sb, "(allow process-fork)")?;
+    writeln!(sb, "(allow sysctl-read)")
 }
 
 fn render_write_rules(sb: &mut String, write_roots: &[PathBuf]) -> fmt::Result {
@@ -108,6 +109,7 @@ fn render_parent_dir_rules(sb: &mut String, roots: &[PathBuf]) -> fmt::Result {
             if parent.as_os_str().is_empty() {
                 break;
             }
+            ancestors.push(parent.to_path_buf());
             if let Ok(real) = std::fs::canonicalize(parent) {
                 ancestors.push(real);
             }
@@ -118,7 +120,7 @@ fn render_parent_dir_rules(sb: &mut String, roots: &[PathBuf]) -> fmt::Result {
     ancestors.dedup();
     for ancestor in &ancestors {
         let escaped = escape_sbpl_literal(&ancestor.to_string_lossy());
-        writeln!(sb, "(allow file-read-data (literal \"{escaped}\"))")?;
+        writeln!(sb, "(allow file-read* (literal \"{escaped}\"))")?;
     }
     Ok(())
 }

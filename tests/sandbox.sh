@@ -213,6 +213,8 @@ expect_listener_allowed() {
 policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s/allowed"]}}' "$tmp")
 test_ok "unrestricted read policy runs tool" "$policy" "$sandbox_shell" -c 'printf ok\\n'
 
+test_ok "sysctl read permits uname" "$policy" "$sandbox_shell" -c 'uname -s'
+
 policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s/allowed"],"denyRead":["/"],"allowRead":["/"]}}' "$tmp")
 test_ok "allowWrite permits configured root" "$policy" "$sandbox_shell" -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ "$tmp/allowed"
 test_fail "allowWrite denies other root" "$policy" "$sandbox_shell" -c ': > "$1/nope.txt"' _ "$tmp/denied"
