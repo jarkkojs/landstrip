@@ -2,7 +2,7 @@
   "name": "@jarkkojs/landstrip-linux-x64",
   "version": "0.11.3",
   "description": "Linux x64 binary for landstrip",
-  "license": "LGPL-2.1-or-later",
+  "license": "Apache-2.0 AND LGPL-2.1-or-later",
   "homepage": "https://github.com/jarkkojs/landstrip#readme",
   "repository": {
     "type": "git",
@@ -16,6 +16,7 @@
   ],
   "files": [
     "bin/landstrip",
+    "LICENSE-APACHE-2.0",
     "LICENSE-LGPL-2.1"
   ],
   "publishConfig": {

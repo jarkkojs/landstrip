@@ -334,20 +334,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p npm/darwin-arm64/bin npm/darwin-x64/bin npm/linux-x64/bin npm/win32-x64/bin
+          package_dirs=(npm/darwin-arm64 npm/darwin-x64 npm/linux-x64 npm/win32-x64)
+          license_files=(LICENSE-APACHE-2.0 LICENSE-LGPL-2.1)
+
+          for package_dir in "${package_dirs[@]}"; do
+            mkdir -p "$package_dir/bin"
+          done
           tar -xzf artifacts/darwin-arm64/darwin-arm64.tar.gz -C npm/darwin-arm64/bin
           tar -xzf artifacts/darwin-x64/darwin-x64.tar.gz -C npm/darwin-x64/bin
           tar -xzf artifacts/linux-x64/linux-x64.tar.gz -C npm/linux-x64/bin
           tar -xzf artifacts/win32-x64/win32-x64.tar.gz -C npm/win32-x64/bin
-          license_file=LICENSE-LGPL-2.1
-          if [[ ! -f "$license_file" ]]; then
-            license_file=LICENSE
-          fi
-          [[ -f "$license_file" ]] || { echo "missing LGPL license file" >&2; exit 1; }
-          cp "$license_file" npm/darwin-arm64/LICENSE-LGPL-2.1
-          cp "$license_file" npm/darwin-x64/LICENSE-LGPL-2.1
-          cp "$license_file" npm/linux-x64/LICENSE-LGPL-2.1
-          cp "$license_file" npm/win32-x64/LICENSE-LGPL-2.1
+
+          for license_file in "${license_files[@]}"; do
+            [[ -f "$license_file" ]] || { echo "missing $license_file" >&2; exit 1; }
+            for package_dir in "${package_dirs[@]}"; do
+              cp "$license_file" "$package_dir/$license_file"
+            done
+          done
           chmod 755 npm/darwin-arm64/bin/landstrip
           chmod 755 npm/darwin-x64/bin/landstrip
           chmod 755 npm/linux-x64/bin/landstrip

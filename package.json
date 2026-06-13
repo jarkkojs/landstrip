@@ -2,7 +2,7 @@
   "name": "@jarkkojs/landstrip",
   "version": "0.11.3",
   "description": "Sandbox runner using Landlock, Seatbelt, and AppContainer",
-  "license": "Apache-2.0",
+  "license": "Apache-2.0 AND LGPL-2.1-or-later",
   "homepage": "https://github.com/jarkkojs/landstrip#readme",
   "repository": {
     "type": "git",
@@ -20,7 +20,8 @@
     "bin",
     "lib",
     "README.md",
-    "LICENSE-APACHE-2.0"
+    "LICENSE-APACHE-2.0",
+    "LICENSE-LGPL-2.1"
   ],
   "optionalDependencies": {
     "@jarkkojs/landstrip-darwin-arm64": "0.11.3",
