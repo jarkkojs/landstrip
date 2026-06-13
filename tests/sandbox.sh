@@ -89,6 +89,21 @@ expect_success_no_access_denied() {
     fi
 }
 
+expect_failure_access_denied() {
+    name=$1
+    expected_file=$2
+    shift 2
+    set +e
+    output=$({ "$@"; } 2>&1)
+    status=$?
+    set -e
+    if [ "$status" -ne 0 ] && printf '%s\n' "$output" | grep -q 'reason: AccessDenied' && printf '%s\n' "$output" | grep -q "file: $expected_file"; then
+        pass "$name"
+    else
+        fail "$name" "status=$status output=$output"
+    fi
+}
+
 write_policy() {
     fmt=$1; shift
     file="$tmp/policy-next.json"
@@ -253,7 +268,7 @@ printf 'ok\n' >"$tmp/read-ok/data.txt"
 printf 'no\n' >"$tmp/read-no/data.txt"
 policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"denyRead":["/"],"allowRead":["%s/read-ok","/usr","/lib","/lib64","/bin","/sbin","/etc"]}}' "$tmp")
 test_ok "allowRead permits read in allowed path" "$policy" "$sandbox_shell" -c 'cat "$1/data.txt"' _ "$tmp/read-ok"
-test_fail "allowRead denies read in other path" "$policy" "$sandbox_shell" -c 'cat "$1/data.txt"' _ "$tmp/read-no"
+expect_failure_access_denied "allowRead denies other root" "$tmp/read-no/data.txt" "$bin" -p "$policy" "$sandbox_shell" -c 'cat "$1/data.txt"' _ "$tmp/read-no"
 
 mkdir -p "$tmp/probe-denied/bin"
 policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"denyRead":["%s/probe-denied"]}}' "$tmp")

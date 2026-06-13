@@ -1082,6 +1082,7 @@ fn handle_openat(
         return Err(BrokerError::PolicyDenied);
     }
     if wants_read && check_fs_read(policy, &resolved).is_err() {
+        fs_denials.record(&resolved);
         return Err(BrokerError::PolicyDenied);
     }
 
