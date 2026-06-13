@@ -282,7 +282,7 @@ dependencies = [
  "serde_yml",
  "strum",
  "strum_macros",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
