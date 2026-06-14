@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
-use crate::error::{Error, ErrorKind, Result};
+use crate::error::{Error, ErrorFormat, ErrorKind, Result};
 use argh::FromArgs;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -16,6 +16,7 @@ pub(crate) struct Cli {
     pub(crate) format: PolicyFormat,
     pub(crate) debug: bool,
     pub(crate) error_fd: Option<i32>,
+    pub(crate) error_format: ErrorFormat,
     pub(crate) tool: OsString,
     pub(crate) tool_args: Vec<OsString>,
 }
@@ -53,6 +54,10 @@ struct CliOptions {
     /// write landstrip error responses to an already-open file descriptor
     #[argh(option, from_str_fn(parse_error_fd))]
     error_fd: Option<i32>,
+
+    /// error output format: plain (default) or json
+    #[argh(option, from_str_fn(parse_error_format))]
+    error_format: Option<ErrorFormat>,
 
     /// tool to run inside the sandbox, followed by its arguments
     #[argh(positional)]
@@ -118,6 +123,7 @@ fn parse_cli_action(
         format: options.format.unwrap_or(PolicyFormat::Json),
         debug: options.debug,
         error_fd: options.error_fd,
+        error_format: options.error_format.unwrap_or_default(),
         tool,
         tool_args: tool_tail.collect(),
     }))
@@ -132,27 +138,16 @@ fn split_cli_args(args: impl IntoIterator<Item = OsString>) -> (Vec<OsString>, V
             return (option_args, args.collect());
         }
 
-        if arg == OsStr::new("--policy") || arg == OsStr::new("-p") {
-            option_args.push(arg);
-            if let Some(value) = args.next() {
-                option_args.push(value);
-            }
+        if take_option_value(&["--policy", "-p"], &arg, &mut option_args, &mut args) {
             continue;
         }
-
-        if arg == OsStr::new("--format") {
-            option_args.push(arg);
-            if let Some(value) = args.next() {
-                option_args.push(value);
-            }
+        if take_option_value(&["--format"], &arg, &mut option_args, &mut args) {
             continue;
         }
-
-        if arg == OsStr::new("--error-fd") {
-            option_args.push(arg);
-            if let Some(value) = args.next() {
-                option_args.push(value);
-            }
+        if take_option_value(&["--error-fd"], &arg, &mut option_args, &mut args) {
+            continue;
+        }
+        if take_option_value(&["--error-format"], &arg, &mut option_args, &mut args) {
             continue;
         }
 
@@ -167,6 +162,22 @@ fn split_cli_args(args: impl IntoIterator<Item = OsString>) -> (Vec<OsString>, V
     }
 
     (option_args, Vec::new())
+}
+
+fn take_option_value(
+    names: &[&str],
+    arg: &OsStr,
+    option_args: &mut Vec<OsString>,
+    args: &mut impl Iterator<Item = OsString>,
+) -> bool {
+    if names.iter().any(|name| arg == OsStr::new(name)) {
+        option_args.push(arg.to_os_string());
+        if let Some(value) = args.next() {
+            option_args.push(value);
+        }
+        return true;
+    }
+    false
 }
 
 fn parse_policy_path(path: &str) -> std::result::Result<PathBuf, String> {
@@ -192,6 +203,16 @@ fn parse_policy_format(format: &str) -> std::result::Result<PolicyFormat, String
         "json" => Ok(PolicyFormat::Json),
         "yaml" => Ok(PolicyFormat::Yaml),
         _ => Err("policy format must be json or yaml".to_owned()),
+    }
+}
+
+fn parse_error_format(s: &str) -> std::result::Result<ErrorFormat, String> {
+    match s {
+        "plain" => Ok(ErrorFormat::Plain),
+        "json" => Ok(ErrorFormat::Json),
+        _ => Err(format!(
+            "invalid error format '{s}' — expected 'plain' or 'json'"
+        )),
     }
 }
 

@@ -3,16 +3,18 @@
 
 //! Separate file descriptor for landstrip error response blocks.
 
+use crate::error::ErrorFormat;
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ErrorFd {
     fd: Option<i32>,
+    error_format: ErrorFormat,
 }
 
 impl ErrorFd {
-    pub(crate) fn from_fd(fd: Option<i32>) -> Self {
-        Self { fd }
+    pub(crate) fn from_fd(fd: Option<i32>, error_format: ErrorFormat) -> Self {
+        Self { fd, error_format }
     }
 
     pub(crate) fn is_enabled(self) -> bool {
@@ -26,15 +28,31 @@ impl ErrorFd {
         close_error_fd(fd);
     }
 
+    pub(crate) fn error_format(self) -> ErrorFormat {
+        self.error_format
+    }
+
     pub(crate) fn emit_filesystem_denial(self, operation: &str, path: &Path, mechanism: &str) {
         let Some(fd) = self.fd else {
             return;
         };
 
-        let response = format!(
-            "reason: AccessDenied\ntype: filesystem\nfile: {}\noperation: {operation}\nmechanism: {mechanism}\n\n",
-            path.display()
-        );
+        let response = match self.error_format {
+            ErrorFormat::Plain => format!(
+                "reason: AccessDenied\ntype: filesystem\nfile: {}\noperation: {operation}\nmechanism: {mechanism}\n\n",
+                path.display()
+            ),
+            ErrorFormat::Json => {
+                let json = serde_json::json!({
+                    "reason": "AccessDenied",
+                    "type": "filesystem",
+                    "file": path.display().to_string(),
+                    "operation": operation,
+                    "mechanism": mechanism
+                });
+                format!("{json}\n")
+            }
+        };
         write_error_line(fd, response.as_bytes());
     }
 }

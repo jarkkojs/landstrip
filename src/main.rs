@@ -24,25 +24,25 @@ mod traversal;
 
 use crate::cli::{Cli, parse_cli};
 use crate::config::load_settings;
-use crate::error::{Error, ErrorKind, Result};
+use crate::error::{Error, ErrorFormat, ErrorKind, Result};
 use crate::error_fd::ErrorFd;
 use crate::policy::resolve_policy;
 use std::process;
 
 fn main() {
-    let cli = parse_cli().unwrap_or_else(|e| exit_with_error(&e));
+    let cli = parse_cli().unwrap_or_else(|e| exit_with_error(&e, ErrorFormat::default()));
 
     if let Err(error) = run_with_cli(&cli) {
-        exit_with_error(&error);
+        exit_with_error(&error, cli.error_format);
     }
 }
 
-fn exit_with_error(error: &Error) -> ! {
+fn exit_with_error(error: &Error, error_format: ErrorFormat) -> ! {
     if let ErrorKind::Usage = error.kind {
         eprintln!("{error}");
         process::exit(2);
     }
-    error.emit();
+    error.emit(error_format);
     process::exit(1);
 }
 
@@ -59,7 +59,7 @@ fn run_with_cli(cli: &Cli) -> Result<()> {
     let settings = load_settings(&cli.policy_paths, cli.format)?;
     let policy = resolve_policy(&settings.filesystem, &settings.network, &cwd)?;
 
-    let error_fd = ErrorFd::from_fd(cli.error_fd);
+    let error_fd = ErrorFd::from_fd(cli.error_fd, cli.error_format);
     platform::execute(&policy, &cli.tool, &cli.tool_args, error_fd)?;
 
     Ok(())

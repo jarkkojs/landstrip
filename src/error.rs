@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
+use serde_json::Map as JsonMap;
 use std::error::Error as StdError;
 use std::ffi::OsString;
 use std::fmt;
@@ -34,6 +35,13 @@ pub(crate) enum ErrorKind {
     #[allow(dead_code)]
     Unsupported,
     Usage,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) enum ErrorFormat {
+    #[default]
+    Plain,
+    Json,
 }
 
 #[derive(Debug)]
@@ -80,7 +88,14 @@ impl Error {
         }
     }
 
-    pub(crate) fn emit(&self) {
+    pub(crate) fn emit(&self, format: ErrorFormat) {
+        match format {
+            ErrorFormat::Plain => self.emit_plain(),
+            ErrorFormat::Json => self.emit_json(),
+        }
+    }
+
+    fn emit_plain(&self) {
         eprintln!("reason: {}", self.kind);
         if let Some(value) = self.r#type {
             eprintln!("type: {value}");
@@ -127,6 +142,60 @@ impl Error {
         if let Some(ref value) = self.cause_desc {
             eprintln!("cause: {value}");
         }
+    }
+
+    fn emit_json(&self) {
+        let mut map = JsonMap::new();
+        map.insert("reason".to_owned(), self.kind.to_string().into());
+        if let Some(value) = self.r#type {
+            map.insert("type".to_owned(), value.into());
+        }
+        if let Some(ref value) = self.file {
+            map.insert("file".to_owned(), value.display().to_string().into());
+        }
+        if let Some(value) = self.operation {
+            map.insert("operation".to_owned(), value.into());
+        }
+        if let Some(ref value) = self.program {
+            map.insert(
+                "program".to_owned(),
+                value.to_string_lossy().into_owned().into(),
+            );
+        }
+        if let Some(ref value) = self.source {
+            map.insert("source".to_owned(), value.as_str().into());
+        }
+        if let Some(ref value) = self.api {
+            map.insert("api".to_owned(), value.as_str().into());
+        }
+        if let Some(ref value) = self.code {
+            map.insert("code".to_owned(), value.as_str().into());
+        }
+        if let Some(ref value) = self.errno {
+            map.insert("errno".to_owned(), value.as_str().into());
+        }
+        if let Some(ref value) = self.mechanism {
+            map.insert("mechanism".to_owned(), value.as_str().into());
+        }
+        if let Some(ref value) = self.action {
+            map.insert("action".to_owned(), value.as_str().into());
+        }
+        if let Some(ref value) = self.offset {
+            map.insert("offset".to_owned(), value.as_str().into());
+        }
+        if let Some(ref value) = self.port {
+            map.insert("port".to_owned(), value.as_str().into());
+        }
+        if let Some(ref value) = self.arch {
+            map.insert("arch".to_owned(), value.as_str().into());
+        }
+        if let Some(ref value) = self.feature {
+            map.insert("feature".to_owned(), value.as_str().into());
+        }
+        if let Some(ref value) = self.cause_desc {
+            map.insert("cause".to_owned(), value.as_str().into());
+        }
+        eprintln!("{}", serde_json::Value::Object(map));
     }
 
     pub(crate) fn with_type(mut self, r#type: &'static str) -> Self {

@@ -357,7 +357,7 @@ impl FilesystemDenials {
                 .with_type("filesystem")
                 .with_operation(denial.operation.as_str())
                 .with_file(denial.path.clone())
-                .emit();
+                .emit(self.error_fd.error_format());
         }
         code
     }
