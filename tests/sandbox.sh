@@ -380,6 +380,10 @@ policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"denyRead"
 expect_success_no_access_denied "successful PATH probe hides nonfatal denials" \
     "$bin" -p "$policy" "$sandbox_shell" -c 'PATH="$1/probe-denied/bin:/bin:/usr/bin" ls /bin/sh' _ "$tmp"
 
+policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"denyRead":["/home"],"allowRead":["/usr","/lib","/lib64","/bin","/sbin","/etc"]}}')
+expect_success_no_access_denied "missing denied read returns absent" \
+    "$bin" -p "$policy" "$sandbox_shell" -c 'test ! -e "/home/landstrip-missing-$$"'
+
 policy_fs=$(write_policy '{"filesystem":{"allowWrite":["%s/allowed"],"denyRead":["/"],"allowRead":["/"]}}' "$tmp")
 policy_net="$tmp/policy-net.json"
 printf '{"network":{"allowNetwork":true}}' >"$policy_net"

@@ -1097,6 +1097,12 @@ fn create_path(path: &Path) -> PathBuf {
     }
 }
 
+fn path_exists(path: &Path) -> SysResult<bool> {
+    path.try_exists().map_err(|error| BrokerError::SystemCall {
+        errno: error.raw_os_error().unwrap_or(libc::EIO),
+    })
+}
+
 fn handle_openat(
     policy: &AccessPolicy,
     request: &libc::seccomp_notif,
@@ -1120,12 +1126,22 @@ fn handle_openat(
     let wants_read = (flags & libc::O_WRONLY) == 0;
 
     if wants_write && check_fs_write(policy, &resolved).is_err() {
+        if (flags & libc::O_CREAT) == 0 && !path_exists(&resolved)? {
+            return Err(BrokerError::SystemCall {
+                errno: libc::ENOENT,
+            });
+        }
         if reports_write {
             fs_denials.record(&resolved, FilesystemOperation::Write);
         }
         return Err(BrokerError::PolicyDenied);
     }
     if wants_read && check_fs_read(policy, &resolved).is_err() {
+        if !path_exists(&resolved)? {
+            return Err(BrokerError::SystemCall {
+                errno: libc::ENOENT,
+            });
+        }
         fs_denials.record(&resolved, FilesystemOperation::Read);
         return Err(BrokerError::PolicyDenied);
     }
@@ -1149,6 +1165,11 @@ fn handle_fstatat(
 
     let resolved = resolve_child_path(pid, dirfd, &path)?;
     if check_fs_read(policy, &resolved).is_err() {
+        if !path_exists(&resolved)? {
+            return Err(BrokerError::SystemCall {
+                errno: libc::ENOENT,
+            });
+        }
         return Err(BrokerError::PolicyDenied);
     }
 
