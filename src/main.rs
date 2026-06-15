@@ -3,13 +3,11 @@
 
 #![deny(clippy::all)]
 #![deny(clippy::pedantic)]
-// Large Err variant expected — Error carries optional diagnostic context
+// Large Err variant expected — Trap carries optional diagnostic context
 #![allow(clippy::result_large_err)]
 
 mod cli;
 mod config;
-mod error;
-mod error_fd;
 mod paths;
 #[cfg_attr(target_os = "linux", path = "linux/mod.rs")]
 #[cfg_attr(target_os = "macos", path = "macos.rs")]
@@ -20,29 +18,31 @@ mod paths;
 )]
 mod platform;
 mod policy;
+mod trap;
+mod trap_fd;
 mod traversal;
 
 use crate::cli::{Cli, parse_cli};
 use crate::config::load_settings;
-use crate::error::{Error, ErrorFormat, ErrorKind, Result};
-use crate::error_fd::ErrorFd;
 use crate::policy::resolve_policy;
+use crate::trap::{Result, Trap, TrapCode};
+use crate::trap_fd::TrapFd;
 use std::process;
 
 fn main() {
-    let cli = parse_cli().unwrap_or_else(|e| exit_with_error(&e, ErrorFormat::default()));
+    let cli = parse_cli().unwrap_or_else(|e| exit_with_trap(&e));
 
-    if let Err(error) = run_with_cli(&cli) {
-        exit_with_error(&error, cli.error_format);
+    if let Err(trap) = run_with_cli(&cli) {
+        exit_with_trap(&trap);
     }
 }
 
-fn exit_with_error(error: &Error, error_format: ErrorFormat) -> ! {
-    if let ErrorKind::Usage = error.kind {
-        eprintln!("{error}");
+fn exit_with_trap(trap: &Trap) -> ! {
+    if let TrapCode::Usage = trap.code {
+        eprintln!("{trap}");
         process::exit(2);
     }
-    error.emit(error_format);
+    trap.emit();
     process::exit(1);
 }
 
@@ -59,8 +59,8 @@ fn run_with_cli(cli: &Cli) -> Result<()> {
     let settings = load_settings(&cli.policy_paths, cli.format)?;
     let policy = resolve_policy(&settings.filesystem, &settings.network, &cwd)?;
 
-    let error_fd = ErrorFd::from_fd(cli.error_fd, cli.error_format);
-    platform::execute(&policy, &cli.tool, &cli.tool_args, error_fd)?;
+    let trap_fd = TrapFd::from_fd(cli.trap_fd);
+    platform::execute(&policy, &cli.tool, &cli.tool_args, trap_fd)?;
 
     Ok(())
 }

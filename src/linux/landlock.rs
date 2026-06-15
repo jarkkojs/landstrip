@@ -7,8 +7,8 @@
 //! This gives deny traversal snapshot semantics: a removed and recreated path is
 //! a new object unless an allowed ancestor covers it.
 
-use crate::error::{Error, ErrorKind, Result};
 use crate::policy::{AccessPolicy, ReadAccess, UnixSocketAccess};
+use crate::trap::{Result, Trap, TrapCode};
 use nix::errno::Errno;
 use std::ffi::CString;
 use std::io;
@@ -157,7 +157,7 @@ fn add_path_rules(ruleset: &OwnedFd, paths: &[PathBuf], access: u64, label: &str
                 );
                 continue;
             }
-            Err(error) => return Err(Error::from(error)),
+            Err(error) => return Err(Trap::from(error)),
         };
 
         let path_access = if fd_is_dir(&fd)? {
@@ -209,7 +209,7 @@ fn landlock_abi() -> Result<i32> {
         return Err(landlock_error("query Landlock ABI"));
     }
 
-    i32::try_from(rc).map_err(|_| Error::new(ErrorKind::InvalidResponse))
+    i32::try_from(rc).map_err(|_| Trap::new(TrapCode::Internal))
 }
 
 fn create_ruleset(attr: &RulesetAttr) -> Result<OwnedFd> {
@@ -226,7 +226,7 @@ fn create_ruleset(attr: &RulesetAttr) -> Result<OwnedFd> {
         return Err(landlock_error("create Landlock ruleset"));
     }
 
-    let fd = i32::try_from(rc).map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
+    let fd = i32::try_from(rc).map_err(|_| Trap::new(TrapCode::Internal))?;
     // SAFETY: landlock_create_ruleset returned a new owned file descriptor.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
@@ -253,7 +253,7 @@ fn restrict_self(ruleset: &OwnedFd) -> Result<()> {
     // SAFETY: prctl copies scalar arguments and only affects the current process.
     let rc = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
     if rc != 0 {
-        return Err(Error::from(io::Error::last_os_error()));
+        return Err(Trap::from(io::Error::last_os_error()));
     }
 
     // SAFETY: landlock_restrict_self copies scalar arguments and consumes no ownership.
@@ -283,22 +283,22 @@ fn fd_is_dir(fd: &OwnedFd) -> Result<bool> {
     // SAFETY: fd is valid and stat points to writable storage.
     let rc = unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) };
     if rc != 0 {
-        return Err(Error::from(io::Error::last_os_error()));
+        return Err(Trap::from(io::Error::last_os_error()));
     }
 
     Ok((stat.st_mode & libc::S_IFMT) == libc::S_IFDIR)
 }
 
-fn landlock_error(action: &str) -> Error {
+fn landlock_error(action: &str) -> Trap {
     match Errno::last() {
-        Errno::ENOSYS => Error::new(ErrorKind::FeatureNotAvailable)
-            .with_mechanism("landlock")
-            .with_cause_desc("not_implemented")
-            .with_action(action),
-        Errno::EOPNOTSUPP => Error::new(ErrorKind::FeatureNotAvailable)
-            .with_mechanism("landlock")
-            .with_cause_desc("disabled")
-            .with_action(action),
-        _ => Error::from(io::Error::last_os_error()),
+        Errno::ENOSYS => Trap::new(TrapCode::Internal)
+            .with_detail("mechanism", "landlock")
+            .with_detail("cause_desc", "not_implemented")
+            .with_detail("action", action),
+        Errno::EOPNOTSUPP => Trap::new(TrapCode::Internal)
+            .with_detail("mechanism", "landlock")
+            .with_detail("cause_desc", "disabled")
+            .with_detail("action", action),
+        _ => Trap::from(io::Error::last_os_error()),
     }
 }

@@ -12,12 +12,12 @@
 //! while lowering the policy.
 
 use crate::config::{SandboxFilesystem, SandboxNetwork};
-use crate::error::{Error, ErrorKind, PolicyPort, Result};
 use crate::paths::normalize_path_lexically;
 #[cfg(target_os = "macos")]
 use crate::paths::normalize_roots_lexically;
 #[cfg(not(target_os = "macos"))]
 use crate::paths::{normalize_path, normalize_roots};
+use crate::trap::{PolicyPort, Result, Trap, TrapCode};
 use crate::traversal::subtract_denied_roots;
 use std::env;
 use std::fs;
@@ -153,7 +153,7 @@ fn push_proxy_port(ports: &mut Vec<u16>, port: Option<u16>, port_name: PolicyPor
     };
 
     if port == 0 {
-        return Err(Error::new(ErrorKind::InvalidPort).with_port(port_name));
+        return Err(Trap::new(TrapCode::Internal).with_detail("port", port_name.to_string()));
     }
 
     ports.push(port);
@@ -211,7 +211,7 @@ fn normalize_policy_roots(paths: &mut Vec<PathBuf>) {
 }
 fn resolve_sandbox_path(path: &str, base: &Path, home: Option<&Path>) -> Result<PathBuf> {
     if path.is_empty() {
-        return Err(Error::new(ErrorKind::InvalidPath));
+        return Err(Trap::new(TrapCode::Internal));
     }
 
     let raw = Path::new(path);
@@ -219,10 +219,10 @@ fn resolve_sandbox_path(path: &str, base: &Path, home: Option<&Path>) -> Result<
         raw.to_path_buf()
     } else if path == "~" {
         home.map(Path::to_path_buf)
-            .ok_or_else(|| Error::new(ErrorKind::HomeNotAvailable))?
+            .ok_or_else(|| Trap::new(TrapCode::Internal))?
     } else if let Some(rest) = path.strip_prefix("~/") {
         home.map(|home| home.join(rest))
-            .ok_or_else(|| Error::new(ErrorKind::HomeNotAvailable))?
+            .ok_or_else(|| Trap::new(TrapCode::Internal))?
     } else {
         base.join(raw)
     };

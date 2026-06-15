@@ -7,9 +7,9 @@ mod fd;
 mod landlock;
 mod seccomp;
 
-use crate::error::{Error, Result};
-use crate::error_fd::ErrorFd;
 use crate::policy::AccessPolicy;
+use crate::trap::{Result, Trap};
+use crate::trap_fd::TrapFd;
 use fd::close_inherited_fds;
 use landlock::{enforce_access_policy, landlock_features};
 use seccomp::NetworkFilter;
@@ -21,7 +21,7 @@ pub(crate) fn execute(
     policy: &AccessPolicy,
     tool: &OsStr,
     args: &[OsString],
-    error_fd: ErrorFd,
+    trap_fd: TrapFd,
 ) -> Result<()> {
     let network = &policy.network_access;
     let unrestricted_network = network.is_unrestricted();
@@ -35,7 +35,7 @@ pub(crate) fn execute(
         log::debug!("{engine}: Unix socket policy enabled");
     }
 
-    let needs_fs_broker = seccomp::needs_filesystem_broker(policy) || error_fd.is_enabled();
+    let needs_fs_broker = seccomp::needs_filesystem_broker(policy) || trap_fd.is_enabled();
     let needs_network_broker = !unrestricted_network
         && (network.local_tcp_bind
             || !network.connect_tcp_ports.is_empty()
@@ -49,9 +49,9 @@ pub(crate) fn execute(
             args,
             needs_network_broker,
             needs_fs_broker,
-            error_fd,
+            trap_fd,
         )?;
-        error_fd.close();
+        trap_fd.close();
         process::exit(status);
     }
 
@@ -71,5 +71,5 @@ pub(crate) fn execute(
     }
     close_inherited_fds();
     let error = Command::new(tool).args(args).exec();
-    Err(Error::tool_exec(Some(tool.to_os_string()), error))
+    Err(Trap::tool_exec(Some(tool.to_os_string()), error))
 }

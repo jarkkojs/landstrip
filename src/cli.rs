@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
-use crate::error::{Error, ErrorFormat, ErrorKind, Result};
+use crate::trap::{Result, Trap, TrapCode};
 use argh::FromArgs;
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -15,14 +15,14 @@ pub(crate) struct Cli {
     pub(crate) policy_paths: Vec<PathBuf>,
     pub(crate) format: PolicyFormat,
     pub(crate) debug: bool,
-    pub(crate) error_fd: Option<i32>,
-    pub(crate) error_format: ErrorFormat,
+    pub(crate) trap_fd: Option<i32>,
     pub(crate) tool: OsString,
     pub(crate) tool_args: Vec<OsString>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) enum PolicyFormat {
+    #[default]
     Json,
     Yaml,
 }
@@ -43,7 +43,8 @@ struct CliOptions {
     #[argh(switch, short = 'V')]
     version: bool,
 
-    /// policy file; repeat to merge; stdin when omitted
+    /// policy file; repeat to merge; stdin when omitted; .json/.yaml/.yml paths
+    /// are also detected positionally before the tool
     #[argh(option, short = 'p', from_str_fn(parse_policy_path))]
     policy: Vec<PathBuf>,
 
@@ -51,13 +52,9 @@ struct CliOptions {
     #[argh(option, from_str_fn(parse_policy_format))]
     format: Option<PolicyFormat>,
 
-    /// write landstrip error responses to an already-open file descriptor
-    #[argh(option, from_str_fn(parse_error_fd))]
-    error_fd: Option<i32>,
-
-    /// error output format: plain (default) or json
-    #[argh(option, from_str_fn(parse_error_format))]
-    error_format: Option<ErrorFormat>,
+    /// write landstrip trap responses to an already-open file descriptor
+    #[argh(option, from_str_fn(parse_trap_fd))]
+    trap_fd: Option<i32>,
 
     /// tool to run inside the sandbox, followed by its arguments
     #[argh(positional)]
@@ -109,21 +106,20 @@ fn parse_cli_action(
     }
 
     if tool_tail.is_empty() {
-        return Err(Error::new(ErrorKind::Usage).with_source(tool_required_usage(&program_name)));
+        return Err(Trap::new(TrapCode::Usage).with_message(tool_required_usage(&program_name)));
     }
 
     debug_assert!(options.tool.is_none());
     let mut tool_tail = tool_tail.into_iter();
     let tool = tool_tail.next().ok_or_else(|| {
-        Error::new(ErrorKind::Usage).with_source(tool_required_usage(PROGRAM_NAME))
+        Trap::new(TrapCode::Usage).with_message(tool_required_usage(PROGRAM_NAME))
     })?;
 
     Ok(CliAction::Run(Cli {
         policy_paths: options.policy,
         format: options.format.unwrap_or(PolicyFormat::Json),
         debug: options.debug,
-        error_fd: options.error_fd,
-        error_format: options.error_format.unwrap_or_default(),
+        trap_fd: options.trap_fd,
         tool,
         tool_args: tool_tail.collect(),
     }))
@@ -144,14 +140,17 @@ fn split_cli_args(args: impl IntoIterator<Item = OsString>) -> (Vec<OsString>, V
         if take_option_value(&["--format"], &arg, &mut option_args, &mut args) {
             continue;
         }
-        if take_option_value(&["--error-fd"], &arg, &mut option_args, &mut args) {
-            continue;
-        }
-        if take_option_value(&["--error-format"], &arg, &mut option_args, &mut args) {
+        if take_option_value(&["--trap-fd"], &arg, &mut option_args, &mut args) {
             continue;
         }
 
         if arg.to_string_lossy().starts_with('-') {
+            option_args.push(arg);
+            continue;
+        }
+
+        if is_policy_path(&arg.to_string_lossy()) {
+            option_args.push(OsString::from("-p"));
             option_args.push(arg);
             continue;
         }
@@ -162,6 +161,14 @@ fn split_cli_args(args: impl IntoIterator<Item = OsString>) -> (Vec<OsString>, V
     }
 
     (option_args, Vec::new())
+}
+
+fn is_policy_path(arg: &str) -> bool {
+    Path::new(arg).extension().is_some_and(|ext| {
+        ext.eq_ignore_ascii_case("json")
+            || ext.eq_ignore_ascii_case("yaml")
+            || ext.eq_ignore_ascii_case("yml")
+    })
 }
 
 fn take_option_value(
@@ -188,12 +195,12 @@ fn parse_policy_path(path: &str) -> std::result::Result<PathBuf, String> {
     Ok(PathBuf::from(path))
 }
 
-fn parse_error_fd(fd: &str) -> std::result::Result<i32, String> {
+fn parse_trap_fd(fd: &str) -> std::result::Result<i32, String> {
     let fd = fd
         .parse::<i32>()
-        .map_err(|_| "error fd must be an integer >= 3".to_owned())?;
+        .map_err(|_| "trap fd must be an integer >= 3".to_owned())?;
     if fd < 3 {
-        return Err("error fd must be an integer >= 3".to_owned());
+        return Err("trap fd must be an integer >= 3".to_owned());
     }
     Ok(fd)
 }
@@ -203,16 +210,6 @@ fn parse_policy_format(format: &str) -> std::result::Result<PolicyFormat, String
         "json" => Ok(PolicyFormat::Json),
         "yaml" => Ok(PolicyFormat::Yaml),
         _ => Err("policy format must be json or yaml".to_owned()),
-    }
-}
-
-fn parse_error_format(s: &str) -> std::result::Result<ErrorFormat, String> {
-    match s {
-        "plain" => Ok(ErrorFormat::Plain),
-        "json" => Ok(ErrorFormat::Json),
-        _ => Err(format!(
-            "invalid error format '{s}' — expected 'plain' or 'json'"
-        )),
     }
 }
 
@@ -229,9 +226,9 @@ fn parse_cli_options(
     let mut arg_strings = Vec::with_capacity(args.size_hint().0);
 
     for arg in args {
-        let string = arg.into_string().map_err(|_| {
-            Error::new(ErrorKind::Usage).with_source("argument encoding".to_owned())
-        })?;
+        let string = arg
+            .into_string()
+            .map_err(|_| Trap::new(TrapCode::Usage).with_message("argument encoding".to_owned()))?;
 
         arg_strings.push(string);
     }
@@ -250,7 +247,7 @@ fn parse_cli_options(
                     .next()
                     .filter(|line| !line.is_empty())
                     .unwrap_or("arguments invalid");
-                Err(Error::new(ErrorKind::Usage).with_source(message.to_owned()))
+                Err(Trap::new(TrapCode::Usage).with_message(message.to_owned()))
             }
         }
     }

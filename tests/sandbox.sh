@@ -102,8 +102,8 @@ expect_success_access_denied() {
     set -e
     has_expected_structured_file=0
     if printf '%s\n' "$output" | grep -F -q \
-        -e "file: $expected_file" \
-        -e "file: $expected_real"; then
+        -e "\"file\":\"$expected_file\"" \
+        -e "\"file\":\"$expected_real\""; then
         has_expected_structured_file=1
     fi
     has_expected_native_file=0
@@ -114,8 +114,8 @@ expect_success_access_denied() {
     fi
     has_structured_denial=0
     if [ "$has_expected_structured_file" -eq 1 ] && \
-        printf '%s\n' "$output" | grep -F -q 'reason: AccessDenied' && \
-        printf '%s\n' "$output" | grep -F -q "operation: $expected_operation"; then
+        printf '%s\n' "$output" | grep -F -q '"reason":"AccessDenied"' && \
+        printf '%s\n' "$output" | grep -F -q "\"operation\":\"$expected_operation\""; then
         has_structured_denial=1
     fi
     has_native_denial=0
@@ -131,15 +131,15 @@ expect_success_access_denied() {
     fi
 }
 
-expect_error_fd_write_denied() {
+expect_trap_fd_write_denied() {
     name=$1
     policy=$2
     denied_file=$3
     expected_real=$(CDPATH= cd -- "$(dirname -- "$denied_file")" && pwd -P)/$(basename -- "$denied_file")
-    diag=$tmp/error-fd-write-denied.txt
+    diag=$tmp/trap-fd-write-denied.txt
     rm -f "$diag"
     set +e
-    output=$("$bin" --error-fd 3 -p "$policy" "$sandbox_shell" -c \
+    output=$("$bin" --trap-fd 3 -p "$policy" "$sandbox_shell" -c \
         'if test -e /proc/self/fd/3; then echo fd3-inherited >&2; fi; : > "$1"; exit 1' \
         _ "$denied_file" 3>"$diag" 2>&1)
     status=$?
@@ -147,22 +147,22 @@ expect_error_fd_write_denied() {
 
     has_expected_file=0
     if grep -F -q \
-        -e "file: $denied_file" \
-        -e "file: $expected_real" \
+        -e "\"file\":\"$denied_file\"" \
+        -e "\"file\":\"$expected_real\"" \
         "$diag"; then
         has_expected_file=1
     fi
 
     if [ "$status" -ne 0 ] && [ "$has_expected_file" -eq 1 ] && \
-        grep -F -q 'reason: AccessDenied' "$diag" && \
-        grep -F -q 'type: filesystem' "$diag" && \
-        grep -F -q 'operation: write' "$diag" && \
-        grep -F -q 'mechanism: seccomp' "$diag" && \
+        grep -F -q '"reason":"AccessDenied"' "$diag" && \
+        grep -F -q '"type":"filesystem"' "$diag" && \
+        grep -F -q '"operation":"write"' "$diag" && \
+        grep -F -q '"mechanism":"seccomp"' "$diag" && \
         ! printf '%s\n' "$output" | grep -F -q 'fd3-inherited'; then
         pass "$name"
     else
         diag_output=$(cat "$diag" 2>/dev/null || true)
-        fail "$name" "status=$status output=$output error_fd=$diag_output"
+        fail "$name" "status=$status output=$output trap_fd=$diag_output"
     fi
 }
 
@@ -177,15 +177,15 @@ expect_failure_access_denied() {
     set -e
     has_expected_file=0
     if printf '%s\n' "$output" | grep -F -q \
-        -e "file: $expected_file" \
-        -e "file: $expected_real" \
+        -e "\"file\":\"$expected_file\"" \
+        -e "\"file\":\"$expected_real\"" \
         -e "$expected_file" \
         -e "$expected_real"; then
         has_expected_file=1
     fi
     if [ "$status" -ne 0 ] && [ "$has_expected_file" -eq 1 ] && \
         printf '%s\n' "$output" | grep -F -q \
-        -e 'reason: AccessDenied' \
+        -e '"reason":"AccessDenied"' \
         -e 'Operation not permitted'; then
         pass "$name"
     else
@@ -303,8 +303,8 @@ policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrit
 expect_success_access_denied "successful write denial is reported" "/dev/null" write \
     "$bin" -p "$policy" "$sandbox_shell" -c 'cat /dev/null >/dev/null; true'
 if [ "$os_name" = Linux ]; then
-    expect_error_fd_write_denied "error fd reports write denial" \
-        "$policy" "$tmp/denied/error-fd.txt"
+    expect_trap_fd_write_denied "trap fd reports write denial" \
+        "$policy" "$tmp/denied/trap-fd.txt"
 fi
 
 policy_yaml=$tmp/policy-fs.yaml

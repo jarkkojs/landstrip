@@ -3,9 +3,9 @@
 
 //! macOS Seatbelt (SBPL) sandbox platform.
 
-use crate::error::{Error, ErrorKind, Result};
-use crate::error_fd::ErrorFd;
 use crate::policy::{AccessPolicy, NetworkAccess, ReadAccess, UnixSocketAccess};
+use crate::trap::{Result, Trap, TrapCategory, TrapCode};
+use crate::trap_fd::TrapFd;
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fmt::{self, Write};
 use std::os::unix::process::CommandExt;
@@ -19,14 +19,14 @@ pub(crate) fn execute(
     policy: &AccessPolicy,
     tool: &OsStr,
     args: &[OsString],
-    error_fd: ErrorFd,
+    trap_fd: TrapFd,
 ) -> Result<()> {
-    let profile = render_profile(policy).map_err(Error::policy_stdin_source)?;
+    let profile = render_profile(policy).map_err(Trap::policy_stdin_source)?;
     let args = canonicalize_args(args);
     apply_profile(&profile)?;
-    error_fd.close();
+    trap_fd.close();
     let error = Command::new(tool).args(&args).exec();
-    Err(Error::tool_exec(Some(tool.to_os_string()), error))
+    Err(Trap::tool_exec(Some(tool.to_os_string()), error))
 }
 
 fn canonicalize_args(args: &[OsString]) -> Vec<OsString> {
@@ -45,9 +45,10 @@ fn canonicalize_args(args: &[OsString]) -> Vec<OsString> {
 fn apply_profile(profile: &str) -> Result<()> {
     let profile = CString::new(profile).map_err(|source| {
         let nul_position = source.nul_position();
-        Error::new(ErrorKind::InvalidEncoding)
-            .with_offset(nul_position)
-            .with_mechanism("sbpl")
+        Trap::new(TrapCode::Internal)
+            .with_detail("offset", nul_position.to_string())
+            .with_detail("mechanism", "sbpl")
+            .with_category(TrapCategory::Encoding)
     })?;
     let mut errorbuf = ptr::null_mut();
 
@@ -57,9 +58,9 @@ fn apply_profile(profile: &str) -> Result<()> {
     if rc == 0 {
         Ok(())
     } else {
-        Err(Error::new(ErrorKind::SetupFailed)
-            .with_source(take_sandbox_error(errorbuf))
-            .with_mechanism("sbpl"))
+        Err(Trap::new(TrapCode::Internal)
+            .with_message(take_sandbox_error(errorbuf))
+            .with_detail("mechanism", "sbpl"))
     }
 }
 

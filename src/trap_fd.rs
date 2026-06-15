@@ -1,20 +1,18 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
-//! Separate file descriptor for landstrip error response blocks.
+//! Separate file descriptor for landstrip trap response blocks.
 
-use crate::error::ErrorFormat;
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct ErrorFd {
+pub(crate) struct TrapFd {
     fd: Option<i32>,
-    error_format: ErrorFormat,
 }
 
-impl ErrorFd {
-    pub(crate) fn from_fd(fd: Option<i32>, error_format: ErrorFormat) -> Self {
-        Self { fd, error_format }
+impl TrapFd {
+    pub(crate) fn from_fd(fd: Option<i32>) -> Self {
+        Self { fd }
     }
 
     pub(crate) fn is_enabled(self) -> bool {
@@ -25,11 +23,7 @@ impl ErrorFd {
         let Some(fd) = self.fd else {
             return;
         };
-        close_error_fd(fd);
-    }
-
-    pub(crate) fn error_format(self) -> ErrorFormat {
-        self.error_format
+        close_trap_fd(fd);
     }
 
     pub(crate) fn emit_filesystem_denial(self, operation: &str, path: &Path, mechanism: &str) {
@@ -37,28 +31,20 @@ impl ErrorFd {
             return;
         };
 
-        let response = match self.error_format {
-            ErrorFormat::Plain => format!(
-                "reason: AccessDenied\ntype: filesystem\nfile: {}\noperation: {operation}\nmechanism: {mechanism}\n\n",
-                path.display()
-            ),
-            ErrorFormat::Json => {
-                let json = serde_json::json!({
-                    "reason": "AccessDenied",
-                    "type": "filesystem",
-                    "file": path.display().to_string(),
-                    "operation": operation,
-                    "mechanism": mechanism
-                });
-                format!("{json}\n")
-            }
-        };
-        write_error_line(fd, response.as_bytes());
+        let json = serde_json::json!({
+            "reason": "AccessDenied",
+            "type": "filesystem",
+            "file": path.display().to_string(),
+            "operation": operation,
+            "mechanism": mechanism
+        });
+        let response = format!("{json}\n");
+        write_trap_line(fd, response.as_bytes());
     }
 }
 
 #[cfg(unix)]
-fn write_error_line(fd: i32, line: &[u8]) {
+fn write_trap_line(fd: i32, line: &[u8]) {
     let mut remaining = line;
     while !remaining.is_empty() {
         // SAFETY: write(2) copies bytes from the live slice pointer.
@@ -72,7 +58,7 @@ fn write_error_line(fd: i32, line: &[u8]) {
                 continue;
             }
             log::debug!(
-                "error fd write fd={fd} errno={}",
+                "trap fd write fd={fd} errno={}",
                 error.raw_os_error().unwrap_or(0)
             );
             return;
@@ -86,20 +72,20 @@ fn write_error_line(fd: i32, line: &[u8]) {
 }
 
 #[cfg(unix)]
-fn close_error_fd(fd: i32) {
+fn close_trap_fd(fd: i32) {
     // SAFETY: close(2) copies the scalar file descriptor argument.
     let rc = unsafe { libc::close(fd) };
     if rc != 0 {
         let error = std::io::Error::last_os_error();
         log::debug!(
-            "error fd close fd={fd} errno={}",
+            "trap fd close fd={fd} errno={}",
             error.raw_os_error().unwrap_or(0)
         );
     }
 }
 
 #[cfg(not(unix))]
-fn write_error_line(_fd: i32, _line: &[u8]) {}
+fn write_trap_line(_fd: i32, _line: &[u8]) {}
 
 #[cfg(not(unix))]
-fn close_error_fd(_fd: i32) {}
+fn close_trap_fd(_fd: i32) {}

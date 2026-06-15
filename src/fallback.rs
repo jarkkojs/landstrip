@@ -3,19 +3,19 @@
 
 //! Fallback platform implementation for unsupported platforms.
 //!
-//! Returns [`ErrorKind::Unsupported`] to communicate that the current
+//! Returns [`TrapCode::Internal`] to communicate that the current
 //! operating system is not yet supported by landstrip.
 
-use crate::error::{Error, ErrorKind, Result};
-use crate::error_fd::ErrorFd;
 use crate::policy::AccessPolicy;
+use crate::trap::{Result, Trap, TrapCode};
+use crate::trap_fd::TrapFd;
 use std::ffi::{OsStr, OsString};
 
 pub(crate) fn execute(
     _policy: &AccessPolicy,
     _tool: &OsStr,
     _args: &[OsString],
-    _error_fd: ErrorFd,
+    _trap_fd: TrapFd,
 ) -> Result<()> {
-    Err(Error::new(ErrorKind::Unsupported))
+    Err(Trap::new(TrapCode::Internal))
 }

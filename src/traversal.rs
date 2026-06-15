@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
-use crate::error::{Error, ErrorKind, Result};
 #[cfg(not(target_os = "macos"))]
 use crate::paths::normalize_roots;
 #[cfg(target_os = "macos")]
 use crate::paths::normalize_roots_lexically as normalize_roots;
+use crate::trap::{Result, Trap, TrapCode};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ fn scan_allowed_root(
 
     while let Some((current, is_explicit, depth)) = stack.pop() {
         if depth >= MAX_TRAVERSAL_DEPTH {
-            return Err(Error::new(ErrorKind::Other).with_source(format!(
+            return Err(Trap::new(TrapCode::Internal).with_message(format!(
                 "directory traversal depth exceeded at {}",
                 current.display()
             )));

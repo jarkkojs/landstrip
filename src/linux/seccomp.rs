@@ -14,10 +14,10 @@
 
 use super::fd::close_inherited_fds;
 use super::landlock::{LandlockFeatures, enforce_access_policy};
-use crate::error::{Error, ErrorKind, Result};
-use crate::error_fd::ErrorFd;
 use crate::paths::normalize_path;
 use crate::policy::{AccessPolicy, ReadAccess, UnixSocketAccess};
+use crate::trap::{Result, Trap, TrapCategory, TrapCode, TrapOperation};
+use crate::trap_fd::TrapFd;
 use nix::errno::Errno;
 use nix::fcntl::{FcntlArg, fcntl};
 use nix::poll::{PollFd, PollFlags, poll};
@@ -107,7 +107,7 @@ pub(super) fn run_broker(
     args: &[OsString],
     needs_network: bool,
     needs_filesystem: bool,
-    error_fd: ErrorFd,
+    trap_fd: TrapFd,
 ) -> Result<i32> {
     let notify_unix_sockets = needs_unix_socket_broker(&policy.network_access.unix_socket_access);
     let notify_bind =
@@ -131,7 +131,7 @@ pub(super) fn run_broker(
     }
 
     let eafnosupport =
-        u32::try_from(libc::EAFNOSUPPORT).map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
+        u32::try_from(libc::EAFNOSUPPORT).map_err(|_| Trap::new(TrapCode::Internal))?;
     let errno = if errno_rules.is_empty() {
         None
     } else {
@@ -187,7 +187,7 @@ pub(super) fn run_broker(
                 child_tool.args(args);
 
                 let error = child_tool.exec();
-                Err(Error::tool_exec(Some(tool.to_os_string()), error))
+                Err(Trap::tool_exec(Some(tool.to_os_string()), error))
             })();
 
             if let Err(error) = result {
@@ -210,7 +210,7 @@ pub(super) fn run_broker(
                 notify_fd,
                 &syscalls,
                 notify_filesystem,
-                error_fd,
+                trap_fd,
             )
         }
     }
@@ -223,9 +223,9 @@ fn supervise_child(
     notify_fd: RawFd,
     syscalls: &NotificationSyscalls,
     notify_filesystem: bool,
-    error_fd: ErrorFd,
+    trap_fd: TrapFd,
 ) -> Result<i32> {
-    let mut fs_denials = FilesystemDenials::new(error_fd);
+    let mut fs_denials = FilesystemDenials::new(trap_fd);
     loop {
         loop {
             match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
@@ -291,7 +291,7 @@ fn supervise_child(
                 }
             }
 
-            return Err(Error::policy_stdin_source(source));
+            return Err(Trap::policy_stdin_source(source));
         }
     }
 }
@@ -319,15 +319,15 @@ struct FilesystemDenial {
 
 #[derive(Default)]
 struct FilesystemDenials {
-    error_fd: ErrorFd,
+    trap_fd: TrapFd,
     seen: HashSet<FilesystemDenial>,
     pending: Vec<FilesystemDenial>,
 }
 
 impl FilesystemDenials {
-    fn new(error_fd: ErrorFd) -> Self {
+    fn new(trap_fd: TrapFd) -> Self {
         Self {
-            error_fd,
+            trap_fd,
             ..Self::default()
         }
     }
@@ -348,16 +348,16 @@ impl FilesystemDenials {
             .iter()
             .filter(|denial| code != 0 || denial.operation == FilesystemOperation::Write)
         {
-            self.error_fd.emit_filesystem_denial(
-                denial.operation.as_str(),
-                &denial.path,
-                "seccomp",
-            );
-            Error::new(ErrorKind::AccessDenied)
-                .with_type("filesystem")
-                .with_operation(denial.operation.as_str())
-                .with_file(denial.path.clone())
-                .emit(self.error_fd.error_format());
+            self.trap_fd
+                .emit_filesystem_denial(denial.operation.as_str(), &denial.path, "seccomp");
+            Trap::new(TrapCode::AccessDenied)
+                .with_category(TrapCategory::Filesystem)
+                .with_operation(match denial.operation {
+                    FilesystemOperation::Read => TrapOperation::Read,
+                    FilesystemOperation::Write => TrapOperation::Write,
+                })
+                .with_path(denial.path.clone())
+                .emit();
         }
         code
     }
@@ -440,9 +440,9 @@ fn seccomp_probe(operation: libc::c_uint, data: *mut libc::c_void) -> Result<()>
     // SAFETY: seccomp(2) copies the operation-specific data pointer before returning.
     let rc = unsafe { libc::syscall(libc::SYS_seccomp, operation, 0, data) };
     if rc < 0 {
-        return Err(Error::new(ErrorKind::FeatureNotAvailable)
-            .with_mechanism("seccomp")
-            .with_errno(Errno::last()));
+        return Err(Trap::new(TrapCode::Internal)
+            .with_detail("mechanism", "seccomp")
+            .with_detail("errno", format!("{}", Errno::last())));
     }
 
     Ok(())
@@ -489,8 +489,8 @@ fn validate_notification_id(fd: RawFd, id: u64) -> Result<()> {
     }
 }
 
-fn system_errno(errno: i32) -> Error {
-    Error::new(ErrorKind::SystemCallFailed).with_errno(errno)
+fn system_errno(errno: i32) -> Trap {
+    Trap::new(TrapCode::Internal).with_detail("errno", errno.to_string())
 }
 
 fn handle_bind(
@@ -796,7 +796,7 @@ pub(super) fn network_filter(config: NetworkFilter, needs_network: bool) -> Resu
     }
 
     let eafnosupport =
-        u32::try_from(libc::EAFNOSUPPORT).map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
+        u32::try_from(libc::EAFNOSUPPORT).map_err(|_| Trap::new(TrapCode::Internal))?;
     let errno = if errno_rules.is_empty() {
         None
     } else {
@@ -848,18 +848,18 @@ impl NetworkFilters {
         let notify = self
             .notify
             .as_ref()
-            .ok_or_else(|| Error::new(ErrorKind::InvalidProfile))?;
+            .ok_or_else(|| Trap::new(TrapCode::Internal))?;
 
         load_program(notify, libc::SECCOMP_FILTER_FLAG_NEW_LISTENER)?
-            .ok_or_else(|| Error::new(ErrorKind::FileDescriptorNotFound))
+            .ok_or_else(|| Trap::new(TrapCode::Internal))
     }
 }
 
 fn build_filter(rules: RuleMap, match_action: SeccompAction) -> Result<BpfProgram> {
     let filter = SeccompFilter::new(rules, SeccompAction::Allow, match_action, target_arch()?)
-        .map_err(Error::policy_stdin_source)?;
+        .map_err(Trap::policy_stdin_source)?;
     let program = <BpfProgram as TryFrom<SeccompFilter>>::try_from(filter)
-        .map_err(Error::policy_stdin_source)?;
+        .map_err(Trap::policy_stdin_source)?;
 
     Ok(program)
 }
@@ -874,7 +874,7 @@ fn build_notify_filter(syscalls: &[i64]) -> Result<BpfProgram> {
     for syscall in syscalls {
         program.push(bpf_jump(
             jump_eq,
-            u32::try_from(*syscall).map_err(|_| Error::new(ErrorKind::InvalidResponse))?,
+            u32::try_from(*syscall).map_err(|_| Trap::new(TrapCode::Internal))?,
             0,
             1,
         ));
@@ -886,7 +886,7 @@ fn build_notify_filter(syscalls: &[i64]) -> Result<BpfProgram> {
 }
 
 fn bpf_code(code: u32) -> Result<u16> {
-    u16::try_from(code).map_err(|_| Error::new(ErrorKind::InvalidResponse))
+    u16::try_from(code).map_err(|_| Trap::new(TrapCode::Internal))
 }
 
 fn bpf_stmt(code: u16, k: u32) -> seccompiler::sock_filter {
@@ -907,13 +907,13 @@ fn target_arch() -> Result<TargetArch> {
         "x86_64" => Ok(TargetArch::x86_64),
         "aarch64" => Ok(TargetArch::aarch64),
         "riscv64" => Ok(TargetArch::riscv64),
-        arch => Err(Error::new(ErrorKind::ArchitectureNotSupported).with_arch(arch)),
+        arch => Err(Trap::new(TrapCode::Internal).with_detail("arch", arch)),
     }
 }
 
 fn load_program(program: &BpfProgram, flags: libc::c_ulong) -> Result<Option<OwnedFd>> {
     if program.is_empty() {
-        return Err(Error::new(ErrorKind::InvalidProfile));
+        return Err(Trap::new(TrapCode::Internal));
     }
 
     // SAFETY: prctl(2) copies scalar arguments only.
@@ -921,8 +921,7 @@ fn load_program(program: &BpfProgram, flags: libc::c_ulong) -> Result<Option<Own
         return Err(system_errno(Errno::last() as i32));
     }
 
-    let len = libc::c_ushort::try_from(program.len())
-        .map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
+    let len = libc::c_ushort::try_from(program.len()).map_err(|_| Trap::new(TrapCode::Internal))?;
     let filter = SockFilterProg {
         len,
         filter: program.as_ptr(),
@@ -945,7 +944,7 @@ fn load_program(program: &BpfProgram, flags: libc::c_ulong) -> Result<Option<Own
         return Ok(None);
     }
 
-    let fd = RawFd::try_from(rc).map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
+    let fd = RawFd::try_from(rc).map_err(|_| Trap::new(TrapCode::Internal))?;
     // SAFETY: seccomp returned a new listener fd when NEW_LISTENER was set.
     Ok(Some(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
@@ -956,7 +955,7 @@ fn seccomp_condition(
     value: u64,
 ) -> Result<SeccompCondition> {
     SeccompCondition::new(arg_index, SeccompCmpArgLen::Dword, operator, value)
-        .map_err(Error::policy_stdin_source)
+        .map_err(Trap::policy_stdin_source)
 }
 
 fn add_conditional_rule(
@@ -964,7 +963,7 @@ fn add_conditional_rule(
     syscall: i64,
     conditions: Vec<SeccompCondition>,
 ) -> Result<()> {
-    let rule = SeccompRule::new(conditions).map_err(Error::policy_stdin_source)?;
+    let rule = SeccompRule::new(conditions).map_err(Trap::policy_stdin_source)?;
     rules.entry(syscall).or_default().push(rule);
 
     Ok(())
@@ -1022,13 +1021,11 @@ pub(super) enum UnixSocketFilter {
 }
 
 fn add_socket_family_filter(rules: &mut RuleMap, socket: i64) -> Result<()> {
-    let stream =
-        u64::try_from(libc::SOCK_STREAM).map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
-    let tcp =
-        u64::try_from(libc::IPPROTO_TCP).map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
+    let stream = u64::try_from(libc::SOCK_STREAM).map_err(|_| Trap::new(TrapCode::Internal))?;
+    let tcp = u64::try_from(libc::IPPROTO_TCP).map_err(|_| Trap::new(TrapCode::Internal))?;
 
     for domain in [libc::AF_INET, libc::AF_INET6] {
-        let domain = u64::try_from(domain).map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
+        let domain = u64::try_from(domain).map_err(|_| Trap::new(TrapCode::Internal))?;
 
         for ty in 0..=SOCK_TYPE_MASK {
             if ty == stream {
@@ -1076,7 +1073,7 @@ fn add_socket_family_filter(rules: &mut RuleMap, socket: i64) -> Result<()> {
 }
 
 fn add_socket_domain_filter(rules: &mut RuleMap, socket: i64, domain: i32) -> Result<()> {
-    let domain = u64::try_from(domain).map_err(|_| Error::new(ErrorKind::InvalidResponse))?;
+    let domain = u64::try_from(domain).map_err(|_| Trap::new(TrapCode::Internal))?;
 
     add_conditional_rule(
         rules,
@@ -1314,7 +1311,7 @@ fn recv_fd(socket: &UnixStream) -> Result<OwnedFd> {
     .map_err(|error| system_errno(error as i32))?;
 
     if message.bytes == 0 {
-        return Err(Error::new(ErrorKind::ConnectionClosed));
+        return Err(Trap::new(TrapCode::Internal));
     }
 
     for control in message
@@ -1330,7 +1327,7 @@ fn recv_fd(socket: &UnixStream) -> Result<OwnedFd> {
         }
     }
 
-    Err(Error::new(ErrorKind::FileDescriptorNotFound))
+    Err(Trap::new(TrapCode::Internal))
 }
 
 #[derive(Debug)]

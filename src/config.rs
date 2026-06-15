@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Jarkko Sakkinen
 
 use crate::cli::PolicyFormat;
-use crate::error::{Error, Result};
+use crate::trap::{Result, Trap};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 use std::error::Error as StdError;
@@ -50,22 +50,22 @@ pub(crate) fn load_settings(policy_paths: &[PathBuf], format: PolicyFormat) -> R
         let mut document = String::new();
         io::stdin()
             .read_to_string(&mut document)
-            .map_err(Error::policy_stdin_source)?;
-        let value = parse_policy_document(&document, format).map_err(Error::policy_stdin_source)?;
+            .map_err(Trap::policy_stdin_source)?;
+        let value = parse_policy_document(&document, format).map_err(Trap::policy_stdin_source)?;
         merge_json(&mut merged, value);
-        serde_json::from_value(merged).map_err(Error::policy_stdin_source)
+        serde_json::from_value(merged).map_err(Trap::policy_stdin_source)
     } else {
         for path in policy_paths {
             log::debug!("config: {}", path.display());
 
             let document = fs::read_to_string(path)
-                .map_err(|source| Error::policy_file_source(path.clone(), source))?;
+                .map_err(|source| Trap::policy_file_source(path.clone(), source))?;
             let value = parse_policy_document(&document, format)
-                .map_err(|source| Error::policy_file_source(path.clone(), source))?;
+                .map_err(|source| Trap::policy_file_source(path.clone(), source))?;
             merge_json(&mut merged, value);
         }
         serde_json::from_value(merged)
-            .map_err(|source| Error::policy_file_source(policy_paths[0].clone(), source))
+            .map_err(|source| Trap::policy_file_source(policy_paths[0].clone(), source))
     }
 }
 
