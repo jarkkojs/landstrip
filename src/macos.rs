@@ -11,6 +11,7 @@ use std::fmt::{self, Write};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
+use std::ptr;
 
 const SBPL_PROFILE_FLAGS: u64 = 0;
 

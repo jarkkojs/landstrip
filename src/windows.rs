@@ -13,6 +13,7 @@ use std::iter;
 use std::mem;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::ptr;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, GetLastError, HANDLE, LocalFree,
     WAIT_FAILED,
@@ -403,7 +404,7 @@ fn command_line(tool: &OsStr, args: &[OsString]) -> Result<String> {
     Ok(parts.join(" "))
 }
 
-fn tool_encoding_error(tool: &OsStr, message: &str) -> Error {
+fn tool_encoding_error(tool: &OsStr, message: &str) -> Trap {
     Trap::new(TrapCode::Internal)
         .with_program(tool.to_os_string())
         .with_message(message.to_owned())
