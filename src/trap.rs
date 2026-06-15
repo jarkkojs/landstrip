@@ -11,7 +11,23 @@ use std::path::PathBuf;
 use strum_macros::Display;
 
 pub(crate) type Result<T> = std::result::Result<T, Trap>;
-type Cause = Box<dyn StdError + Send + Sync + 'static>;
+#[derive(Debug)]
+pub(crate) struct Cause(Box<dyn StdError + Send + Sync + 'static>);
+
+impl fmt::Display for Cause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl Serialize for Cause {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
 
 #[derive(Debug, Display, Serialize)]
 pub(crate) enum TrapCode {
@@ -64,7 +80,7 @@ pub(crate) struct Trap {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) detail: Option<BTreeMap<String, String>>,
 
-    #[serde(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cause: Option<Cause>,
 }
 
@@ -134,7 +150,7 @@ impl Trap {
             program,
             message: error.to_string(),
             category,
-            cause: Some(Box::new(error)),
+            cause: Some(Cause(Box::new(error))),
             ..Self::new(code)
         }
     }
@@ -142,7 +158,7 @@ impl Trap {
     pub(crate) fn policy_stdin_source(source: impl StdError + Send + Sync + 'static) -> Self {
         Self {
             message: source.to_string(),
-            cause: Some(Box::new(source)),
+            cause: Some(Cause(Box::new(source))),
             ..Self::new(TrapCode::Internal)
         }
     }
@@ -154,7 +170,7 @@ impl Trap {
         Self {
             path: Some(path),
             message: source.to_string(),
-            cause: Some(Box::new(source)),
+            cause: Some(Cause(Box::new(source))),
             ..Self::new(TrapCode::Internal)
         }
     }
@@ -184,8 +200,8 @@ impl fmt::Display for Trap {
 impl StdError for Trap {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         self.cause
-            .as_deref()
-            .map(|source| source as &(dyn StdError + 'static))
+            .as_ref()
+            .map(|cause| &*cause.0 as &(dyn StdError + 'static))
     }
 }
 
@@ -194,7 +210,7 @@ impl From<io::Error> for Trap {
         let message = error.to_string();
         Self {
             message,
-            cause: Some(Box::new(error)),
+            cause: Some(Cause(Box::new(error))),
             ..Self::new(TrapCode::Internal)
         }
     }

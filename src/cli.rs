@@ -69,9 +69,7 @@ enum CliAction {
 
 pub(crate) fn parse_cli() -> Result<Cli> {
     let mut env_args = env::args_os();
-    let program = env_args
-        .next()
-        .unwrap_or_else(|| OsString::from(PROGRAM_NAME));
+    let program = env_args.next().unwrap_or(OsString::from(PROGRAM_NAME));
 
     match parse_cli_action(&program, env_args) {
         Ok(CliAction::Run(cli)) => Ok(cli),

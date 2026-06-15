@@ -253,18 +253,15 @@ fn glob_base(pattern: &str) -> PathBuf {
     };
     let prefix = &pattern[..glob_at];
     let base = if prefix.ends_with('/') {
-        prefix.trim_end_matches('/')
+        Path::new(prefix.trim_end_matches('/'))
     } else {
-        Path::new(prefix)
-            .parent()
-            .and_then(Path::to_str)
-            .unwrap_or("/")
+        Path::new(prefix).parent().unwrap_or(Path::new("/"))
     };
 
-    if base.is_empty() {
+    if base.as_os_str().is_empty() {
         PathBuf::from("/")
     } else {
-        PathBuf::from(base)
+        base.to_path_buf()
     }
 }
 
