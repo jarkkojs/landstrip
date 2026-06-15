@@ -9,8 +9,8 @@
 .Op Fl -debug
 .Op Fl -format Ar format
 .Op Fl -trap-fd Ar fd
-.Op Fl p Ar policy
-.Op Fl -policy Ar policy
+.Op Fl p Ar policy | Fl -policy Ar policy
+.Op Ar policy ...
 .Ar command
 .Op Ar argument ...
 .Nm
@@ -50,6 +50,15 @@ Read a policy file. This option may be repeated. Later policy arguments
 are merged over earlier policy arguments. Object values are merged recursively,
 arrays are concatenated without duplicates, and scalar values replace earlier
 values. Commas are literal filename characters.
+Files ending in
+.Pa .json ,
+.Pa .yaml ,
+or
+.Pa .yml
+that appear before the tool argument are detected positionally and automatically
+consumed as
+.Fl p
+arguments.
 .It Fl V , Fl -version
 Print version information and exit.
 .It Fl h , Fl -help
@@ -66,12 +75,12 @@ The relevant policy shape is:
     "allowRead": ["~/.ssh/config"]
   },
   "network": {
+    "allowNetwork": false,
     "httpProxyPort": 8080,
     "socksProxyPort": 8081,
     "allowLocalBinding": false,
     "allowUnixSockets": ["/run/user/1000/agent.sock"],
     "allowAllUnixSockets": false
-  }
 }
 .Ed
 .Pp
@@ -225,22 +234,6 @@ writes JSON trap responses to that file descriptor.
 For example, Linux filesystem denials are emitted as:
 .Bd -literal -offset indent
 {"reason":"AccessDenied","type":"filesystem","file":"/repo/out","operation":"write","mechanism":"seccomp"}
-.Ed
-This trap stream is separate from the sandboxed command's standard output
-and standard error.
-.Pp
-When
-.Fl -trap-fd Ar fd
-is used,
-.Nm
-writes formatted response blocks to that file descriptor.
-For example, Linux filesystem denials are emitted as:
-.Bd -literal -offset indent
-reason: AccessDenied
-type: filesystem
-file: /repo/out
-operation: write
-mechanism: seccomp
 .Ed
 This trap stream is separate from the sandboxed command's standard output
 and standard error.

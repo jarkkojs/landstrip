@@ -78,61 +78,66 @@ network policies until Windows network support exists.
 
 ## Error Output
 
-Failures reported by `landstrip` are printed as `field: value` lines on standard
-error, one line per field. Fields with no value are omitted.  This covers
+Failures reported by `landstrip` are printed as JSON objects on standard
+error, one object per line. Fields with no value are omitted. This covers
 policy, tool launch, platform, and system errors. Usage errors are not formatted
 responses; they remain on standard error and exit with status 2.
 
-```
-reason: Other
-file: policy.json
-source: expected value at line 1 column 1
+```json
+{"reason":"Internal","file":"policy.json","source":"expected value at line 1 column 1"}
 ```
 
-```
-reason: LaunchFailed
-program: cargo
-type: launch
-source: No such file or directory
+```json
+{"reason":"LaunchFailed","program":"cargo","type":"launch","source":"No such file or directory"}
 ```
 
-The `reason` field describes the error kind (e.g. `Other`, `AccessDenied`,
-`LaunchFailed`, `SetupFailed`, `Usage`). The `file` field is present when a
-policy error is tied to a policy file or filesystem access denial. The `program`
-field is present when landstrip could not start or encode a tool. The `type`
-field is present for policy or tool errors and is either `filesystem`, `network`,
-or `platform` for policy errors, or `launch` (failed to start the tool) or
-`encoding` (failed to encode the command line) for tool errors. Filesystem access
-denials may include `operation: read` or `operation: write`.
+The `reason` field describes the error kind (`Internal`, `AccessDenied`,
+`LaunchFailed`, `Usage`). The `file` field is present when a trap is tied to a
+policy file or filesystem access denial. The `program` field is present when
+landstrip could not start or encode a tool. The `type` field is present for
+policy or tool errors and is either `filesystem`, `network`, or `platform` for
+policy errors, or `launch` (failed to start the tool) or `encoding` (failed to
+encode the command line) for tool errors. Filesystem access denials may include
+`operation` set to `read` or `write`.
 
 Logs and sandboxed tool output are not part of the response. Normal successful
 tool execution does not print a landstrip response unless a write denial was
 observed, because standard error belongs to landstrip; standard output belongs
 to the sandboxed tool.
 
-## Error FD
+## Trap FD
 
-Use `--error-fd FD` to write landstrip error response blocks to an
-already-open file descriptor. This side channel is intended for wrappers that
-need to react to sandbox denials without parsing the sandboxed tool's stderr.
+Use `--trap-fd FD` to write landstrip trap denial blocks to an
+already-open file descriptor as JSON objects, one per line followed by
+a newline.
 
 ```sh
-landstrip --error-fd 3 -p policy.json cargo test 3>landstrip-errors.txt
+landstrip --trap-fd 3 -p policy.json cargo test 3>landstrip-traps.txt
 ```
 
-Linux emits filesystem denials observed by the seccomp broker using the same
-field format as landstrip's stderr responses:
+Linux filesystem denials observed by the seccomp broker are emitted as:
 
-```text
-reason: AccessDenied
-type: filesystem
-file: /repo/out
-operation: write
-mechanism: seccomp
+```json
+{"reason":"AccessDenied","type":"filesystem","file":"/repo/out","operation":"write","mechanism":"seccomp"}
 ```
 
-The option is best-effort on other backends; macOS Seatbelt and Windows
-AppContainer do not currently provide per-access denial callbacks.
+The `mechanism` field records the kernel enforcement layer that detected
+the denial (e.g. `seccomp` or `landlock`).
+
+This stream is separate from the sandboxed tool's output. If the option is
+omitted, landstrip is quiet unless it has to report a policy, launch, or
+platform error. These long-lived error messages remain on standard error
+and are not duplicated in the trap stream.
+
+Trap responses are informational. The configured sandbox policy always
+applies. However, writing trap responses requires an already-open file
+descriptor and a readable file path. If the sandbox blocks writing to the
+descriptor, or if writing fails, the denial is quietly dropped and the
+policy remains in effect. On backends without per-denial callbacks the
+option is best-effort.
+
+The descriptor must be 3 or greater (standard I/O descriptors 0-2 are
+reserved).
 
 ## Development
 
