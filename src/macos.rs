@@ -22,24 +22,10 @@ pub(crate) fn execute(
     trap_fd: TrapFd,
 ) -> Result<()> {
     let profile = render_profile(policy).map_err(Trap::policy_stdin_source)?;
-    let args = canonicalize_args(args);
     apply_profile(&profile)?;
     trap_fd.close();
-    let error = Command::new(tool).args(&args).exec();
+    let error = Command::new(tool).args(args).exec();
     Err(Trap::tool_exec(Some(tool.to_os_string()), &error))
-}
-
-fn canonicalize_args(args: &[OsString]) -> Vec<OsString> {
-    let mut out = Vec::with_capacity(args.len());
-    for arg in args {
-        let path = PathBuf::from(arg);
-        let resolved = match std::fs::canonicalize(&path) {
-            Ok(canonical) => canonical.into_os_string(),
-            Err(_) => arg.clone(),
-        };
-        out.push(resolved);
-    }
-    out
 }
 
 fn apply_profile(profile: &str) -> Result<()> {
