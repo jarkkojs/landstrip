@@ -12,6 +12,7 @@ pub(crate) type Result<T> = std::result::Result<T, Trap>;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) enum TrapOperation {
     Read,
     Write,
@@ -19,7 +20,9 @@ pub(crate) enum TrapOperation {
 
 #[derive(Debug, Serialize)]
 pub(crate) enum Trap {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Filesystem(TrapOperation, PathBuf, String),
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Network(String, String, String),
     Launch(String, String),
     Usage(String),
@@ -46,6 +49,7 @@ impl Trap {
         matches!(self, Self::Usage(_))
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn tool_exec(program: Option<OsString>, error: &io::Error) -> Self {
         let program = program
             .map(|program| program.to_string_lossy().into_owned())

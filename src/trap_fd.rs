@@ -3,10 +3,12 @@
 
 //! Separate file descriptor for landstrip trap response blocks.
 
+#[cfg(target_os = "linux")]
 use crate::trap::Trap;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct TrapFd {
+    #[cfg_attr(not(unix), allow(dead_code))]
     fd: Option<i32>,
 }
 
@@ -15,10 +17,12 @@ impl TrapFd {
         Self { fd }
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn is_enabled(self) -> bool {
         self.fd.is_some()
     }
 
+    #[cfg(unix)]
     pub(crate) fn close(self) {
         let Some(fd) = self.fd else {
             return;
@@ -26,6 +30,7 @@ impl TrapFd {
         close_trap_fd(fd);
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn write(self, trap: &Trap) {
         let Some(fd) = self.fd else {
             return;
@@ -37,7 +42,7 @@ impl TrapFd {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn write_trap_line(fd: i32, line: &[u8]) {
     let mut remaining = line;
     while !remaining.is_empty() {
@@ -77,9 +82,3 @@ fn close_trap_fd(fd: i32) {
         );
     }
 }
-
-#[cfg(not(unix))]
-fn write_trap_line(_fd: i32, _line: &[u8]) {}
-
-#[cfg(not(unix))]
-fn close_trap_fd(_fd: i32) {}
