@@ -277,7 +277,9 @@ fn supervise_child(
             &mut denials,
         );
 
-        validate_notification_id(notify_fd, request.id)?;
+        if !validate_notification_id(notify_fd, request.id)? {
+            continue;
+        }
         if let Err(source) = respond_notification(notify_fd, response) {
             loop {
                 match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
@@ -485,12 +487,13 @@ fn respond_notification(fd: RawFd, mut response: libc::seccomp_notif_resp) -> Re
     }
 }
 
-fn validate_notification_id(fd: RawFd, id: u64) -> Result<()> {
+fn validate_notification_id(fd: RawFd, id: u64) -> Result<bool> {
     loop {
         // SAFETY: id points to initialized storage for SECCOMP_IOCTL_NOTIF_ID_VALID.
         match unsafe { seccomp_notif_id_valid(fd, ptr::addr_of!(id)) } {
-            Ok(_) => return Ok(()),
+            Ok(_) => return Ok(true),
             Err(Errno::EINTR) => continue,
+            Err(Errno::ENOENT) => return Ok(false),
             Err(error) => {
                 return Err(system_errno(error as i32));
             }
