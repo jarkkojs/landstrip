@@ -1,15 +1,15 @@
 {
-  "name": "@jarkkojs/landstrip",
+  "name": "@landstrip/landstrip",
   "version": "0.14.2",
   "description": "Sandbox runner using Landlock, Seatbelt, and AppContainer",
   "license": "Apache-2.0 AND LGPL-2.1-or-later",
-  "homepage": "https://github.com/jarkkojs/landstrip#readme",
+  "homepage": "https://github.com/landstrip/landstrip#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jarkkojs/landstrip.git"
+    "url": "git+https://github.com/landstrip/landstrip.git"
   },
   "bugs": {
-    "url": "https://github.com/jarkkojs/landstrip/issues"
+    "url": "https://github.com/landstrip/landstrip/issues"
   },
   "main": "lib/index.js",
   "exports": "./lib/index.js",
@@ -24,10 +24,10 @@
     "LICENSE-LGPL-2.1"
   ],
   "optionalDependencies": {
-    "@jarkkojs/landstrip-darwin-arm64": "0.14.2",
-    "@jarkkojs/landstrip-darwin-x64": "0.14.2",
-    "@jarkkojs/landstrip-linux-x64": "0.14.2",
-    "@jarkkojs/landstrip-win32-x64": "0.14.2"
+    "@landstrip/landstrip-darwin-arm64": "0.14.2",
+    "@landstrip/landstrip-darwin-x64": "0.14.2",
+    "@landstrip/landstrip-linux-x64": "0.14.2",
+    "@landstrip/landstrip-win32-x64": "0.14.2"
   },
   "publishConfig": {
     "access": "public"
