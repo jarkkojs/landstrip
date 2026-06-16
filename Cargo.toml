@@ -10,6 +10,11 @@ name = "landstrip"
 readme = "README.md"
 rust-version = "1.85"
 version = "0.14.5"
+autotests = false
+
+[[test]]
+name = "runner"
+path = "tests/runner.rs"
 
 [dependencies]
 argh = "0.1.19"
