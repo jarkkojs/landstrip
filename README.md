@@ -139,6 +139,15 @@ The trap kinds are:
   diagnostic key/value pairs (for example `source`, `file`, or platform API
   details).
 
+The `reason` field is a platform-independent classification of the policy
+decision, derived from the policy and the requested path rather than from the
+enforcement mechanism. Its stable values are:
+
+- `allow_miss`: the path matched no allow root and was denied by default.
+- `deny_match`: the path matched an explicit deny root that overrides an allow.
+- `unclassified`: a denial occurred but landstrip could not attribute it to a
+  specific rule.
+
 Example of a filesystem denial:
 
 ```json
@@ -155,7 +164,7 @@ Example of a filesystem denial:
       "O_CREAT",
       "O_TRUNC"
     ],
-    "reason": "not_in_allow_write",
+    "reason": "allow_miss",
     "suggested_grant": {
       "allowWrite": "/repo/out"
     },
@@ -201,7 +210,7 @@ emitted with the same object shapes as standard error:
       "O_CREAT",
       "O_TRUNC"
     ],
-    "reason": "not_in_allow_write",
+    "reason": "allow_miss",
     "suggested_grant": {
       "allowWrite": "/repo/out"
     },

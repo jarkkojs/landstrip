@@ -1333,9 +1333,9 @@ fn fs_read_denial_reason(policy: &AccessPolicy, path: &Path) -> Option<&'static 
                 .iter()
                 .any(|root| path == root || path.starts_with(root))
             {
-                Some("deny_read_match")
+                Some("deny_match")
             } else {
-                Some("not_in_allow_read")
+                Some("allow_miss")
             }
         }
     }
@@ -1358,9 +1358,9 @@ fn fs_write_denial_reason(policy: &AccessPolicy, path: &Path) -> Option<&'static
         .iter()
         .any(|root| path == root || path.starts_with(root))
     {
-        Some("deny_write_match")
+        Some("deny_match")
     } else {
-        Some("not_in_allow_write")
+        Some("allow_miss")
     }
 }
 

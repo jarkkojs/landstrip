@@ -162,7 +162,7 @@ expect_trap_fd_write_denied() {
         grep -F -q '"errno":"EACCES"' "$diag" && \
         grep -F -q '"O_CREAT"' "$diag" && \
         grep -F -q '"requested_path"' "$diag" && \
-        grep -F -q '"reason":"not_in_allow_write"' "$diag" && \
+        grep -F -q '"reason":"allow_miss"' "$diag" && \
         grep -F -q '"suggested_grant":{"allowWrite"' "$diag" && \
         grep -F -q '"process":{"pid"' "$diag" && \
         ! printf '%s\n' "$output" | grep -F -q 'fd3-inherited'; then
