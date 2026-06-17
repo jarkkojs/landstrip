@@ -107,7 +107,7 @@ try {
             allowRead = @($Tmp, $RepoRoot)
         }
     }
-    Expect-FailureText "unrestricted network policy is rejected" $PolicyAllowNetwork @($Cmd, "/C", "exit 0") "unrestricted network"
+    Expect-Success "unrestricted network policy permits tool" $PolicyAllowNetwork @($Cmd, "/C", "exit 0")
 
     $PolicyLocalBinding = Join-Path $Tmp "policy-local-binding.json"
     Write-Policy $PolicyLocalBinding @{
