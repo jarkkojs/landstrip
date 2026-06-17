@@ -2020,7 +2020,23 @@ fn run_mutation(grant: &MutationGrant) -> std::result::Result<(), i32> {
         }
         MutationOp::Rename { flags } => {
             let to = grant.anchors.get(1).ok_or(libc::EINVAL)?;
-            unsafe { libc::renameat2(dir, name, to.dir.as_raw_fd(), to.name.as_ptr(), *flags) }
+            // libc 0.2 ships no renameat2 wrapper, so invoke the syscall
+            // directly to carry RENAME_NOREPLACE/EXCHANGE/WHITEOUT through.
+            let rc = unsafe {
+                libc::syscall(
+                    libc::SYS_renameat2,
+                    dir,
+                    name,
+                    to.dir.as_raw_fd(),
+                    to.name.as_ptr(),
+                    *flags,
+                )
+            };
+            return if rc < 0 {
+                Err(Errno::last() as i32)
+            } else {
+                Ok(())
+            };
         }
         MutationOp::Link { flags } => {
             let to = grant.anchors.get(1).ok_or(libc::EINVAL)?;
