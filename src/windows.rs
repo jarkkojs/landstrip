@@ -410,10 +410,11 @@ fn create_process_in_appcontainer(
 
     if created == 0 {
         let code = unsafe { GetLastError() };
-        return Err(Trap::Launch(
-            tool.to_string_lossy().into_owned(),
-            format!("CreateProcessW failed: {code}"),
-        ));
+        return Err(Trap::Launch {
+            code: "LAUNCH_FAILED",
+            program: tool.to_string_lossy().into_owned(),
+            message: format!("CreateProcessW failed: {code}"),
+        });
     }
 
     let process = Handle(process_info.hProcess);

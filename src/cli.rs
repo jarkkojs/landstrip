@@ -104,14 +104,14 @@ fn parse_cli_action(
     }
 
     if tool_tail.is_empty() {
-        return Err(Trap::Usage(tool_required_usage(&program_name)));
+        return Err(Trap::usage(tool_required_usage(&program_name)));
     }
 
     debug_assert!(options.tool.is_none());
     let mut tool_tail = tool_tail.into_iter();
     let tool = tool_tail
         .next()
-        .ok_or_else(|| Trap::Usage(tool_required_usage(PROGRAM_NAME)))?;
+        .ok_or_else(|| Trap::usage(tool_required_usage(PROGRAM_NAME)))?;
 
     Ok(CliAction::Run(Cli {
         policy_paths: options.policy,
@@ -226,7 +226,7 @@ fn parse_cli_options(
     for arg in args {
         let string = arg
             .into_string()
-            .map_err(|_| Trap::Usage("argument encoding".to_owned()))?;
+            .map_err(|_| Trap::usage("argument encoding"))?;
 
         arg_strings.push(string);
     }
@@ -245,7 +245,7 @@ fn parse_cli_options(
                     .next()
                     .filter(|line| !line.is_empty())
                     .unwrap_or("arguments invalid");
-                Err(Trap::Usage(message.to_owned()))
+                Err(Trap::usage(message))
             }
         }
     }

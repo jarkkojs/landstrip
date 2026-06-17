@@ -194,36 +194,66 @@ grants can persist after the sandboxed process exits.
 .Nm
 prints trap responses as JSON objects on standard error,
 one object per line. Each object is tagged by the trap kind, with the kind
-name as the single top-level key.
+name as the single top-level key. Every kind carries a stable
+.Va code .
 .Bd -literal -offset indent
-{"Internal":{"file":"policy.json","source":"expected value at line 1 column 1"}}
+{"Internal":{"code":"INTERNAL_ERROR","detail":{"file":"policy.json","source":"expected value at line 1 column 1"}}}
 .Ed
 The trap kinds are
 .Va Filesystem
-(a filesystem access denial, as
-.Bq Ar operation , path , mechanism
-where the operation is
+(a filesystem access denial, with
+.Va code
+.Va FS_READ_DENIED
+or
+.Va FS_WRITE_DENIED ,
+an
+.Va operation
+of
 .Va read
 or
-.Va write
-and the mechanism is the kernel enforcement layer that detected the denial ) ,
+.Va write ,
+and a
+.Va mechanism
+naming the kernel enforcement layer that detected the denial ) ,
 .Va Network
-(a denied TCP connect or bind, as
-.Bq Ar operation , target , mechanism
-where the operation is
+(a denied TCP connect or bind, with
+.Va code
+.Va NET_CONNECT_DENIED
+or
+.Va NET_BIND_DENIED ,
+an
+.Va operation
+of
 .Va connect
 or
-.Va bind
-and the target is
+.Va bind ,
+and a
+.Va target
+of
 .Ar address : Ns Ar port ) ,
 .Va Launch
-(the tool could not be started, as
-.Bq Ar program , message ) ,
+(the tool could not be started, with
+.Va code
+.Va LAUNCH_FAILED
+and
+.Va program
+and
+.Va message
+fields ) ,
 .Va Usage
-(a command-line usage error message string), and
+(a command-line usage error, with
+.Va code
+.Va USAGE_ERROR
+and a
+.Va message
+field), and
 .Va Internal
-(any other policy, platform, or system error, as an object of diagnostic
-key/value pairs).
+(any other policy, platform, or system error, with
+.Va code
+.Va INTERNAL_ERROR
+and a
+.Va detail
+object of diagnostic key/value pairs).
 .Pp
 Usage errors exit with status 2. Logs and sandboxed command output are not part
 of the trap response. Normal successful command execution does not print a trap

@@ -79,14 +79,34 @@ pub(crate) enum Trap {
     Filesystem(Box<FilesystemTrap>),
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Network(Box<NetworkTrap>),
-    Launch(String, String),
-    Usage(String),
-    Internal(BTreeMap<String, String>),
+    Launch {
+        code: &'static str,
+        program: String,
+        message: String,
+    },
+    Usage {
+        code: &'static str,
+        message: String,
+    },
+    Internal {
+        code: &'static str,
+        detail: BTreeMap<String, String>,
+    },
 }
 
 impl Trap {
     pub(crate) fn internal() -> Self {
-        Self::Internal(BTreeMap::new())
+        Self::Internal {
+            code: "INTERNAL_ERROR",
+            detail: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn usage(message: impl Into<String>) -> Self {
+        Self::Usage {
+            code: "USAGE_ERROR",
+            message: message.into(),
+        }
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -142,7 +162,7 @@ impl Trap {
     }
 
     pub(crate) fn with_detail(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        if let Self::Internal(detail) = &mut self {
+        if let Self::Internal { detail, .. } = &mut self {
             detail.insert(key.into(), value.into());
         }
         self
@@ -153,7 +173,7 @@ impl Trap {
     }
 
     pub(crate) fn is_usage(&self) -> bool {
-        matches!(self, Self::Usage(_))
+        matches!(self, Self::Usage { .. })
     }
 
     #[cfg_attr(not(unix), allow(dead_code))]
@@ -162,7 +182,11 @@ impl Trap {
             .map(|program| program.to_string_lossy().into_owned())
             .unwrap_or_default();
         if error.kind() == io::ErrorKind::NotFound {
-            Self::Launch(program, error.to_string())
+            Self::Launch {
+                code: "LAUNCH_FAILED",
+                program,
+                message: error.to_string(),
+            }
         } else {
             Self::internal()
                 .with_detail("program", program)

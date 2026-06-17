@@ -111,14 +111,15 @@ capabilities; without it the container denies all network access.
 
 Failures reported by `landstrip` are printed as JSON objects on standard
 error, one object per line. Each object is tagged by the trap kind, with the
-kind name as the single top-level key.
+kind name as the single top-level key. Every kind carries a stable `code`, so
+consumers can route on a single field.
 
 ```json
-{"Internal":{"file":"policy.json","source":"expected value at line 1 column 1"}}
+{"Internal":{"code":"INTERNAL_ERROR","detail":{"file":"policy.json","source":"expected value at line 1 column 1"}}}
 ```
 
 ```json
-{"Launch":["cargo","No such file or directory"]}
+{"Launch":{"code":"LAUNCH_FAILED","program":"cargo","message":"No such file or directory"}}
 ```
 
 The trap kinds are:
@@ -132,12 +133,13 @@ The trap kinds are:
   `NET_CONNECT_DENIED` or `NET_BIND_DENIED`; `operation` is `connect` or `bind`;
   `target` is `address:port`; `syscall`, `errno`, and `process` provide routing
   context.
-- `Launch`: the tool could not be started, as `[program, message]`.
-- `Usage`: a command-line usage error, as a message string. Usage errors exit
-  with status 2.
-- `Internal`: any other policy, platform, or system error, as an object of
-  diagnostic key/value pairs (for example `source`, `file`, or platform API
-  details).
+- `Launch`: the tool could not be started. The stable `code` is `LAUNCH_FAILED`;
+  `program` and `message` give the program and the failure detail.
+- `Usage`: a command-line usage error. The stable `code` is `USAGE_ERROR`;
+  `message` is the error text. Usage errors exit with status 2.
+- `Internal`: any other policy, platform, or system error. The stable `code` is
+  `INTERNAL_ERROR`; `detail` is an object of diagnostic key/value pairs (for
+  example `source`, `file`, or platform API details).
 
 The `reason` field is a platform-independent classification of the policy
 decision, derived from the policy and the requested path rather than from the
