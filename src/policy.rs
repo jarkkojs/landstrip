@@ -37,6 +37,45 @@ pub(crate) struct AccessPolicy {
     pub(crate) windows: WindowsPolicy,
 }
 
+// The write broker that consults these lives only in the Linux seccomp path.
+#[cfg(target_os = "linux")]
+impl AccessPolicy {
+    /// Whether a write to `canonical` (with lexical form `lexical`, used for the
+    /// symlink-ancestor deny-list) lands in the `denyWrite` deny-list.
+    pub(crate) fn is_write_denied(&self, canonical: &Path, lexical: &Path) -> bool {
+        self.write_denied_roots
+            .iter()
+            .any(|root| canonical == root || canonical.starts_with(root))
+            || self
+                .write_denied_links
+                .iter()
+                .any(|root| lexical == root || lexical.starts_with(root))
+    }
+
+    /// Why a write to `canonical` is mediated, or `None` when the policy permits
+    /// it. `allow_miss` (outside every `allowWrite` root) is surfaced only in
+    /// query mode; otherwise Landlock denies it and the broker stays silent.
+    pub(crate) fn to_reason(
+        &self,
+        canonical: &Path,
+        lexical: &Path,
+        query_enabled: bool,
+    ) -> Option<&'static str> {
+        if self.is_write_denied(canonical, lexical) {
+            Some("deny_match")
+        } else if query_enabled
+            && !self
+                .write_roots
+                .iter()
+                .any(|root| canonical == root || canonical.starts_with(root))
+        {
+            Some("allow_miss")
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) enum ReadAccess {
     Unrestricted,

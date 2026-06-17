@@ -429,7 +429,7 @@ impl Denials {
 
 enum HandleResult {
     Respond(libc::seccomp_notif_resp),
-    Pending(u64, Option<OpenGrant>),
+    Pending(u64, Option<Grant>),
 }
 
 /// Immutable context shared across notification handling for a supervised child.
@@ -1270,7 +1270,7 @@ fn handle_openat(
 
     if wants_write {
         let lexical = normalize_path_lexically(&raw);
-        let reason = if is_write_denied(policy, &resolved, &lexical) {
+        let reason = if policy.is_write_denied(&resolved, &lexical) {
             Some("deny_match")
         } else if policy
             .write_roots
@@ -1296,7 +1296,7 @@ fn handle_openat(
                     // reopen it safely after the prompt.
                     #[allow(clippy::cast_possible_truncation)]
                     let mode = request.data.args[3] as u32;
-                    let grant = grant_for_open(&resolved, flags, mode);
+                    let grant = Grant::open(&resolved, flags, mode);
                     return Ok(NotificationResult::query(
                         qid,
                         Trap::filesystem_query(
@@ -1501,53 +1501,190 @@ fn handle_mutation(
     };
     let pid = Pid::from_raw(i32::try_from(request.pid).map_err(|_| BrokerError::InvalidAddress)?);
 
-    for (dirfd_arg, path_arg) in spec.paths {
+    let mut slots: Vec<Option<(PathBuf, PathBuf)>> = Vec::with_capacity(spec.paths.len());
+    let mut denial: Option<(usize, &'static str)> = None;
+    for (index, (dirfd_arg, path_arg)) in spec.paths.iter().enumerate() {
         let dirfd = match dirfd_arg {
             // args[i] is an i32 dirfd (including AT_FDCWD=-100) stored as u64.
             #[allow(clippy::cast_possible_truncation)]
-            Some(index) => request.data.args[*index] as i32,
+            Some(arg) => request.data.args[*arg] as i32,
             None => libc::AT_FDCWD,
         };
         let path_ptr =
             usize::try_from(request.data.args[*path_arg]).map_err(|_| BrokerError::BadAddress)?;
         let Some(path) = read_child_path(pid, path_ptr)? else {
+            slots.push(None);
             continue;
         };
         let raw = resolve_child_path(pid, dirfd, &path)?;
         let resolved = normalize_path(&raw);
-        if is_write_denied(policy, &resolved, &normalize_path_lexically(&raw)) {
-            if query_enabled {
-                let qid = *next_query_id;
-                *next_query_id += 1;
-                return Ok(NotificationResult::query(
-                    qid,
-                    Trap::filesystem_query(
-                        TrapOperation::Write,
-                        resolved,
-                        path,
-                        spec.name,
-                        Vec::new(),
-                        "deny_match",
-                        process_context(request.pid),
-                        qid,
-                    ),
-                    None,
-                ));
+        if denial.is_none() {
+            let lexical = normalize_path_lexically(&raw);
+            if let Some(reason) = policy.to_reason(&resolved, &lexical, query_enabled) {
+                denial = Some((index, reason));
             }
-            denials.record(Denial::Filesystem(
-                TrapOperation::Write,
-                resolved,
-                path,
-                spec.name,
-                Vec::new(),
-                "deny_match",
-                process_context(request.pid),
-            ));
-            return Err(BrokerError::PolicyDenied);
         }
+        slots.push(Some((resolved, path)));
     }
 
-    Ok(NotificationResult::Continue)
+    let Some((index, reason)) = denial else {
+        return Ok(NotificationResult::Continue);
+    };
+    let (resolved, path) = slots[index]
+        .clone()
+        .expect("a denied slot is always resolved");
+
+    if !query_enabled {
+        denials.record(Denial::Filesystem(
+            TrapOperation::Write,
+            resolved,
+            path,
+            spec.name,
+            Vec::new(),
+            reason,
+            process_context(request.pid),
+        ));
+        return Err(BrokerError::PolicyDenied);
+    }
+
+    let qid = *next_query_id;
+    *next_query_id += 1;
+    let grant = Grant::mutation(spec, request, pid, &slots)?;
+    Ok(NotificationResult::query(
+        qid,
+        Trap::filesystem_query(
+            TrapOperation::Write,
+            resolved,
+            path,
+            spec.name,
+            Vec::new(),
+            reason,
+            process_context(request.pid),
+            qid,
+        ),
+        grant,
+    ))
+}
+
+impl Grant {
+    fn open(resolved: &Path, flags: i32, mode: u32) -> Option<Grant> {
+        let kind = if let Some(handle) =
+            open_path(resolved, libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        {
+            OpenKind::Reopen(handle)
+        } else {
+            OpenKind::Create {
+                anchor: Anchor::new(resolved)?,
+                mode,
+            }
+        };
+        Some(Grant::Open(OpenGrant { flags, kind }))
+    }
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    fn mutation(
+        spec: &Syscall,
+        request: &libc::seccomp_notif,
+        pid: Pid,
+        slots: &[Option<(PathBuf, PathBuf)>],
+    ) -> SysResult<Option<Grant>> {
+        let args = &request.data.args;
+
+        if spec.name == "creat" {
+            let Some((resolved, _)) = slots.first().and_then(Option::as_ref) else {
+                return Ok(None);
+            };
+            return Ok(Grant::open(
+                resolved,
+                libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC,
+                args[1] as u32,
+            ));
+        }
+
+        let mut anchors = Vec::with_capacity(slots.len());
+        for slot in slots {
+            let Some((resolved, _)) = slot else {
+                return Ok(None);
+            };
+            match Anchor::new(resolved) {
+                Some(anchor) => anchors.push(anchor),
+                None => return Ok(None),
+            }
+        }
+
+        let mut grant = MutationGrant {
+            kind: MutationKind::Unlink,
+            anchors,
+            mode: 0,
+            dev: 0,
+            flags: 0,
+            length: 0,
+            symlink_target: None,
+        };
+
+        grant.kind = match spec.name {
+            "mkdirat" => {
+                grant.mode = args[2] as u32;
+                MutationKind::Mkdir
+            }
+            "mkdir" => {
+                grant.mode = args[1] as u32;
+                MutationKind::Mkdir
+            }
+            "mknodat" => {
+                grant.mode = args[2] as u32;
+                grant.dev = args[3];
+                MutationKind::Mknod
+            }
+            "mknod" => {
+                grant.mode = args[1] as u32;
+                grant.dev = args[2];
+                MutationKind::Mknod
+            }
+            "unlinkat" => {
+                grant.flags = args[2] as i32;
+                MutationKind::Unlink
+            }
+            "unlink" => MutationKind::Unlink,
+            "rmdir" => {
+                grant.flags = libc::AT_REMOVEDIR;
+                MutationKind::Unlink
+            }
+            "renameat2" => {
+                grant.flags = args[4] as i32;
+                MutationKind::Rename
+            }
+            "renameat" | "rename" => MutationKind::Rename,
+            "linkat" => {
+                grant.flags = args[4] as i32;
+                MutationKind::Link
+            }
+            "link" => MutationKind::Link,
+            "symlinkat" | "symlink" => {
+                grant.symlink_target = read_child_target(pid, args[0])?;
+                if grant.symlink_target.is_none() {
+                    return Ok(None);
+                }
+                MutationKind::Symlink
+            }
+            "truncate" => {
+                grant.length = args[1] as i64;
+                MutationKind::Truncate
+            }
+            _ => return Ok(None),
+        };
+
+        Ok(Some(Grant::Mutation(grant)))
+    }
+}
+
+fn read_child_target(pid: Pid, ptr: u64) -> SysResult<Option<CString>> {
+    let addr = usize::try_from(ptr).map_err(|_| BrokerError::BadAddress)?;
+    if addr == 0 {
+        return Ok(None);
+    }
+    let buf = read_child_string(pid, addr, libc::PATH_MAX as usize)?;
+    Ok(CString::new(buf).ok())
 }
 
 fn read_child_path(pid: Pid, path_ptr: usize) -> SysResult<Option<PathBuf>> {
@@ -1611,7 +1748,13 @@ fn process_control_responses(
             }
             match response.action {
                 ControlAction::Allow => match pending.grant {
-                    Some(grant) => grant_open(notify_fd, id, &grant),
+                    // The broker fulfils the operation itself — it runs outside
+                    // the child's Landlock sandbox — so the approval works even
+                    // for paths Landlock forbids.
+                    Some(Grant::Open(grant)) => grant_open(notify_fd, id, &grant),
+                    Some(Grant::Mutation(grant)) => grant_mutation(notify_fd, id, &grant),
+                    // No grant to satisfy: let the kernel run the syscall, still
+                    // subject to the child's Landlock.
                     None => {
                         let _ = respond_notification(notify_fd, notification_continue(id));
                     }
@@ -1653,15 +1796,85 @@ fn grant_open(notify_fd: RawFd, id: u64, grant: &OpenGrant) {
     }
 }
 
-fn pin_dir(path: &Path) -> Option<OwnedFd> {
-    let cpath = CString::new(path.as_os_str().as_bytes()).ok()?;
-    // SAFETY: cpath is NUL-terminated; O_PATH|O_DIRECTORY pins the directory inode.
+fn grant_mutation(notify_fd: RawFd, id: u64, grant: &MutationGrant) {
+    let rc = match run_mutation(grant) {
+        Ok(()) => notification_value(id, 0),
+        Err(errno) => notification_error(id, -errno.abs()),
+    };
+    let _ = respond_notification(notify_fd, rc);
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
+fn run_mutation(grant: &MutationGrant) -> std::result::Result<(), i32> {
+    let primary = grant.anchors.first().ok_or(libc::EINVAL)?;
+    let dir = primary.dir.as_raw_fd();
+    let name = primary.name.as_ptr();
+    let mode = grant.mode as libc::mode_t;
+
+    // SAFETY: every call uses a live pinned dir fd and NUL-terminated names; the
+    // remaining scalar args were captured from the original request.
+    let rc = unsafe {
+        match grant.kind {
+            MutationKind::Mkdir => libc::mkdirat(dir, name, mode),
+            MutationKind::Mknod => libc::mknodat(dir, name, mode, grant.dev as libc::dev_t),
+            MutationKind::Unlink => libc::unlinkat(dir, name, grant.flags),
+            MutationKind::Symlink => {
+                let target = grant.symlink_target.as_ref().ok_or(libc::EINVAL)?;
+                libc::symlinkat(target.as_ptr(), dir, name)
+            }
+            MutationKind::Truncate => return truncate_via_dir(primary, grant.length),
+            MutationKind::Rename => {
+                let to = grant.anchors.get(1).ok_or(libc::EINVAL)?;
+                libc::renameat2(
+                    dir,
+                    name,
+                    to.dir.as_raw_fd(),
+                    to.name.as_ptr(),
+                    grant.flags as libc::c_uint,
+                )
+            }
+            MutationKind::Link => {
+                let to = grant.anchors.get(1).ok_or(libc::EINVAL)?;
+                libc::linkat(dir, name, to.dir.as_raw_fd(), to.name.as_ptr(), grant.flags)
+            }
+        }
+    };
+    if rc < 0 {
+        return Err(Errno::last() as i32);
+    }
+    Ok(())
+}
+
+fn truncate_via_dir(anchor: &Anchor, length: i64) -> std::result::Result<(), i32> {
+    // SAFETY: anchored open of a NUL-terminated name; O_NOFOLLOW keeps a swapped
+    // final symlink from redirecting the write.
     let fd = unsafe {
-        libc::open(
-            cpath.as_ptr(),
-            libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        libc::openat(
+            anchor.dir.as_raw_fd(),
+            anchor.name.as_ptr(),
+            libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )
     };
+    if fd < 0 {
+        return Err(Errno::last() as i32);
+    }
+    // SAFETY: fd is a freshly opened writable descriptor we own.
+    let file = unsafe { OwnedFd::from_raw_fd(fd) };
+    // SAFETY: ftruncate operates on the owned fd.
+    if unsafe { libc::ftruncate(file.as_raw_fd(), length) } < 0 {
+        return Err(Errno::last() as i32);
+    }
+    Ok(())
+}
+
+fn open_path(path: &Path, flags: i32) -> Option<OwnedFd> {
+    let cpath = CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: cpath is NUL-terminated and open copies it.
+    let fd = unsafe { libc::open(cpath.as_ptr(), flags) };
     if fd < 0 {
         return None;
     }
@@ -1669,33 +1882,55 @@ fn pin_dir(path: &Path) -> Option<OwnedFd> {
     Some(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-fn broker_open(grant: &OpenGrant) -> std::result::Result<OwnedFd, i32> {
-    let name = CString::new(grant.name.as_bytes()).map_err(|_| libc::EINVAL)?;
-    let flags = grant.flags | libc::O_CLOEXEC;
-    // SAFETY: name is NUL-terminated and resolved relative to the pinned parent fd.
-    let fd = unsafe {
-        libc::openat(
-            grant.parent.as_raw_fd(),
-            name.as_ptr(),
-            flags,
-            grant.mode as libc::c_uint,
-        )
-    };
-    if fd < 0 {
-        return Err(Errno::last() as i32);
+impl Anchor {
+    fn new(resolved: &Path) -> Option<Self> {
+        Some(Self {
+            dir: open_path(
+                resolved.parent()?,
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )?,
+            name: CString::new(resolved.file_name()?.as_bytes()).ok()?,
+        })
     }
-    // SAFETY: openat returned a new owned descriptor.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-fn grant_for_open(resolved: &Path, flags: i32, mode: u32) -> Option<OpenGrant> {
-    let parent = pin_dir(resolved.parent()?)?;
-    Some(OpenGrant {
-        parent,
-        name: resolved.file_name()?.to_os_string(),
-        flags,
-        mode,
-    })
+fn broker_open(grant: &OpenGrant) -> std::result::Result<OwnedFd, i32> {
+    match &grant.kind {
+        // Reopen the pinned inode through procfs; drop creation flags since it
+        // already exists, but honour the access mode and O_TRUNC/O_APPEND.
+        OpenKind::Reopen(handle) => {
+            let proc_path = CString::new(format!("/proc/self/fd/{}", handle.as_raw_fd()))
+                .map_err(|_| libc::EINVAL)?;
+            let flags = (grant.flags & !(libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW))
+                | libc::O_CLOEXEC;
+            // SAFETY: proc_path is NUL-terminated and names the pinned inode.
+            let fd = unsafe { libc::open(proc_path.as_ptr(), flags) };
+            if fd < 0 {
+                return Err(Errno::last() as i32);
+            }
+            // SAFETY: open returned a new owned descriptor.
+            Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+        }
+        // Create within the pinned parent; O_NOFOLLOW blocks a symlink swapped
+        // into the final name from redirecting the create.
+        OpenKind::Create { anchor, mode } => {
+            let flags = grant.flags | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+            // SAFETY: name is NUL-terminated and resolved relative to the pinned parent.
+            let fd = unsafe {
+                libc::openat(
+                    anchor.dir.as_raw_fd(),
+                    anchor.name.as_ptr(),
+                    flags,
+                    *mode as libc::c_uint,
+                )
+            };
+            if fd < 0 {
+                return Err(Errno::last() as i32);
+            }
+            // SAFETY: openat returned a new owned descriptor.
+            Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+        }
+    }
 }
 
 fn resolve_child_path(pid: Pid, dirfd: i32, path: &Path) -> SysResult<PathBuf> {
@@ -1745,19 +1980,6 @@ fn fs_read_denial_reason(policy: &AccessPolicy, path: &Path) -> Option<&'static 
 
 fn check_fs_read(policy: &AccessPolicy, path: &Path) -> SysResult<()> {
     fs_read_denial_reason(policy, path).map_or(Ok(()), |_| Err(BrokerError::PolicyDenied))
-}
-
-/// Lexical path is matched against the denied symlink ancestors so a link swap
-/// cannot relocate the target out from under the canonical deny.
-fn is_write_denied(policy: &AccessPolicy, canonical: &Path, lexical: &Path) -> bool {
-    policy
-        .write_denied_roots
-        .iter()
-        .any(|root| canonical == root || canonical.starts_with(root))
-        || policy
-            .write_denied_links
-            .iter()
-            .any(|root| lexical == root || lexical.starts_with(root))
 }
 
 fn sockopt(fd: RawFd, level: libc::c_int, name: libc::c_int) -> SysResult<i32> {
@@ -1876,15 +2098,14 @@ enum NotificationResult {
     Query(QueryDecision),
 }
 
-/// A held syscall awaiting a host allow/deny over the control socket.
 struct QueryDecision {
     query_id: u64,
     trap: Trap,
-    grant: Option<OpenGrant>,
+    grant: Option<Grant>,
 }
 
 impl NotificationResult {
-    fn query(query_id: u64, trap: Trap, grant: Option<OpenGrant>) -> Self {
+    fn query(query_id: u64, trap: Trap, grant: Option<Grant>) -> Self {
         NotificationResult::Query(QueryDecision {
             query_id,
             trap,
@@ -1893,16 +2114,55 @@ impl NotificationResult {
     }
 }
 
+enum Grant {
+    Open(OpenGrant),
+    Mutation(MutationGrant),
+}
+
+struct Anchor {
+    dir: OwnedFd,
+    name: CString,
+}
+
 struct OpenGrant {
-    parent: OwnedFd,
-    name: OsString,
     flags: i32,
+    kind: OpenKind,
+}
+
+enum OpenKind {
+    /// The target already existed at query time; reopen its pinned inode through
+    /// `/proc/self/fd` so no path is re-resolved after the prompt.
+    Reopen(OwnedFd),
+    /// The target did not exist; create it within the pinned parent. `O_NOFOLLOW`
+    /// is added so a symlink swapped into the name cannot redirect the create.
+    Create { anchor: Anchor, mode: u32 },
+}
+
+struct MutationGrant {
+    kind: MutationKind,
+    /// Anchors for each path argument, in the syscall's path order.
+    anchors: Vec<Anchor>,
     mode: u32,
+    dev: u64,
+    flags: i32,
+    length: i64,
+    symlink_target: Option<CString>,
+}
+
+#[derive(Clone, Copy)]
+enum MutationKind {
+    Mkdir,
+    Mknod,
+    Unlink,
+    Symlink,
+    Truncate,
+    Rename,
+    Link,
 }
 
 struct PendingQuery {
     request: libc::seccomp_notif,
-    grant: Option<OpenGrant>,
+    grant: Option<Grant>,
 }
 
 struct NotificationSyscalls {
