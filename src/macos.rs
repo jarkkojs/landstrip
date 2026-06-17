@@ -55,7 +55,7 @@ fn render_profile(policy: &AccessPolicy) -> std::result::Result<String, fmt::Err
     writeln!(sb, "(deny default)")?;
 
     render_process_rules(&mut sb)?;
-    render_write_rules(&mut sb, &policy.write_roots)?;
+    render_write_rules(&mut sb, &policy.write_roots, &policy.write_denied_roots)?;
     render_read_rules(&mut sb, &policy.read_access)?;
     render_network_rules(&mut sb, &policy.network_access)?;
 
@@ -68,10 +68,21 @@ fn render_process_rules(sb: &mut String) -> fmt::Result {
     writeln!(sb, "(allow sysctl-read)")
 }
 
-fn render_write_rules(sb: &mut String, write_roots: &[PathBuf]) -> fmt::Result {
+fn render_write_rules(
+    sb: &mut String,
+    write_roots: &[PathBuf],
+    write_denied_roots: &[PathBuf],
+) -> fmt::Result {
     for root in write_roots {
         let escaped = escape_sbpl_literal(&root.to_string_lossy());
         writeln!(sb, "(allow file-write* (subpath \"{escaped}\"))")?;
+    }
+
+    // Deny rules follow the allow rules so SBPL's last-match-wins precedence
+    // subtracts the denied subtrees from the granted write roots.
+    for root in write_denied_roots {
+        let escaped = escape_sbpl_literal(&root.to_string_lossy());
+        writeln!(sb, "(deny file-write* (subpath \"{escaped}\"))")?;
     }
 
     Ok(())
