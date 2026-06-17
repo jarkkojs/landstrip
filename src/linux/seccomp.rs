@@ -29,6 +29,7 @@ use seccompiler::{
     BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
     SeccompRule, TargetArch,
 };
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
@@ -216,6 +217,20 @@ pub(super) fn run_broker(
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ControlAction {
+    Allow,
+    #[serde(other)]
+    Deny,
+}
+
+#[derive(Deserialize)]
+struct ControlResponse {
+    query_id: u64,
+    action: ControlAction,
+}
+
 fn supervise_child(
     policy: &AccessPolicy,
     landlock_features: LandlockFeatures,
@@ -226,6 +241,22 @@ fn supervise_child(
     trap_fd: &TrapFd,
 ) -> Result<i32> {
     let mut denials = Denials::new(trap_fd.clone());
+    let query_enabled = trap_fd.is_socket();
+    let ctx = NotificationContext {
+        policy,
+        landlock_features,
+        syscalls,
+        notify_filesystem,
+        query_enabled,
+    };
+    let trap_fd = trap_fd.fd().filter(|_| query_enabled);
+    let mut pending_queries: std::collections::HashMap<u64, libc::seccomp_notif> =
+        std::collections::HashMap::new();
+    let mut next_query_id: u64 = 1;
+    // SAFETY: notify_fd is the live seccomp notification fd owned by the parent.
+    let notify = unsafe { BorrowedFd::borrow_raw(notify_fd) };
+    // SAFETY: trap fd, when present, is a live socket owned by the parent.
+    let control = trap_fd.map(|cfd| unsafe { BorrowedFd::borrow_raw(cfd) });
     loop {
         loop {
             match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
@@ -238,13 +269,20 @@ fn supervise_child(
             }
         }
 
-        // SAFETY: notify_fd is the live seccomp notification fd owned by the parent.
-        let borrowed = unsafe { BorrowedFd::borrow_raw(notify_fd) };
-        let mut poll_fd = [PollFd::new(borrowed, PollFlags::POLLIN)];
+        let mut poll_fds = [
+            PollFd::new(notify, PollFlags::POLLIN),
+            PollFd::new(control.unwrap_or(notify), PollFlags::POLLIN),
+        ];
+        let len = if control.is_some() { 2 } else { 1 };
         let revents = loop {
-            match poll(&mut poll_fd, POLL_MS) {
-                Ok(0) => break PollFlags::empty(),
-                Ok(_) => break poll_fd[0].revents().unwrap_or_else(PollFlags::empty),
+            match poll(&mut poll_fds[..len], POLL_MS) {
+                Ok(0) => break [PollFlags::empty(); 2],
+                Ok(_) => {
+                    break [
+                        poll_fds[0].revents().unwrap_or_else(PollFlags::empty),
+                        poll_fds[1].revents().unwrap_or_else(PollFlags::empty),
+                    ];
+                }
                 Err(Errno::EINTR) => continue,
                 Err(error) => {
                     return Err(system_errno(error as i32));
@@ -252,11 +290,11 @@ fn supervise_child(
             }
         };
 
-        if revents.is_empty() {
+        if revents.iter().all(PollFlags::is_empty) {
             continue;
         }
 
-        if revents.intersects(PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL) {
+        if revents[0].intersects(PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL) {
             loop {
                 match waitpid(child, None) {
                     Ok(status) => return Ok(denials.emit(status)),
@@ -268,32 +306,41 @@ fn supervise_child(
             }
         }
 
+        if let Some(cfd) = trap_fd {
+            if revents[1].intersects(PollFlags::POLLIN) {
+                process_control_responses(cfd, &mut pending_queries, notify_fd);
+            }
+        }
+
+        if !revents[0].intersects(PollFlags::POLLIN) {
+            continue;
+        }
+
         let request = receive_notification(notify_fd)?;
-        let response = handle_notification(
-            policy,
-            landlock_features,
-            &request,
-            syscalls,
-            notify_filesystem,
-            &mut denials,
-        );
+        let handle_result = handle_notification(&ctx, &request, &mut denials, &mut next_query_id);
 
         if !validate_notification_id(notify_fd, request.id)? {
             continue;
         }
-        if let Err(source) = respond_notification(notify_fd, response) {
-            loop {
-                match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
-                    Ok(WaitStatus::StillAlive) => break,
-                    Ok(status) => return Ok(denials.emit(status)),
-                    Err(Errno::EINTR) => continue,
-                    Err(error) => {
-                        return Err(system_errno(error as i32));
+        match handle_result {
+            HandleResult::Respond(response) => {
+                if let Err(source) = respond_notification(notify_fd, response) {
+                    loop {
+                        match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
+                            Ok(WaitStatus::StillAlive) => break,
+                            Ok(status) => return Ok(denials.emit(status)),
+                            Err(Errno::EINTR) => continue,
+                            Err(error) => {
+                                return Err(system_errno(error as i32));
+                            }
+                        }
                     }
+                    return Err(Trap::policy_stdin_source(source));
                 }
             }
-
-            return Err(Trap::policy_stdin_source(source));
+            HandleResult::Pending(query_id) => {
+                pending_queries.insert(query_id, request);
+            }
         }
     }
 }
@@ -374,35 +421,67 @@ impl Denials {
     }
 }
 
-fn handle_notification(
-    policy: &AccessPolicy,
+enum HandleResult {
+    Respond(libc::seccomp_notif_resp),
+    Pending(u64),
+}
+
+/// Immutable context shared across notification handling for a supervised child.
+struct NotificationContext<'a> {
+    policy: &'a AccessPolicy,
     landlock_features: LandlockFeatures,
-    request: &libc::seccomp_notif,
-    syscalls: &NotificationSyscalls,
+    syscalls: &'a NotificationSyscalls,
     notify_filesystem: bool,
+    query_enabled: bool,
+}
+
+fn handle_notification(
+    ctx: &NotificationContext,
+    request: &libc::seccomp_notif,
     denials: &mut Denials,
-) -> libc::seccomp_notif_resp {
+    next_query_id: &mut u64,
+) -> HandleResult {
     let syscall = i64::from(request.data.nr);
-    let result = if syscall == syscalls.bind {
-        handle_bind(policy, request, denials)
-    } else if syscall == syscalls.connect {
-        handle_connect(policy, landlock_features, request, denials)
-    } else if notify_filesystem && syscall == syscalls.openat {
-        handle_openat(policy, request, denials)
-    } else if notify_filesystem && syscall == syscalls.fstatat {
-        handle_fstatat(policy, request)
-    } else if notify_filesystem {
-        handle_mutation(policy, request, denials)
+    let result = if syscall == ctx.syscalls.bind {
+        handle_bind(ctx.policy, request, denials)
+    } else if syscall == ctx.syscalls.connect {
+        handle_connect(ctx.policy, ctx.landlock_features, request, denials)
+    } else if ctx.notify_filesystem && syscall == ctx.syscalls.openat {
+        handle_openat(
+            ctx.policy,
+            request,
+            denials,
+            ctx.query_enabled,
+            next_query_id,
+        )
+    } else if ctx.notify_filesystem && syscall == ctx.syscalls.fstatat {
+        handle_fstatat(ctx.policy, request)
+    } else if ctx.notify_filesystem {
+        handle_mutation(
+            ctx.policy,
+            request,
+            denials,
+            ctx.query_enabled,
+            next_query_id,
+        )
     } else {
         Ok(NotificationResult::Continue)
     };
 
     match result {
-        Ok(NotificationResult::Value(value)) => notification_value(request.id, value),
-        Ok(NotificationResult::Continue) => notification_continue(request.id),
+        Ok(NotificationResult::Value(value)) => {
+            HandleResult::Respond(notification_value(request.id, value))
+        }
+        Ok(NotificationResult::Continue) => {
+            HandleResult::Respond(notification_continue(request.id))
+        }
+        Ok(NotificationResult::Query(query_id, trap)) => {
+            denials.trap_fd.write(&trap);
+            HandleResult::Pending(query_id)
+        }
         Err(error) => {
             let errno = error.errno();
-            notification_error(request.id, -errno.abs())
+            HandleResult::Respond(notification_error(request.id, -errno.abs()))
         }
     }
 }
@@ -1162,6 +1241,8 @@ fn handle_openat(
     policy: &AccessPolicy,
     request: &libc::seccomp_notif,
     denials: &mut Denials,
+    query_enabled: bool,
+    next_query_id: &mut u64,
 ) -> SysResult<NotificationResult> {
     // args[0] is dirfd: an i32 (including AT_FDCWD=-100) stored as u64.
     #[allow(clippy::cast_possible_truncation)]
@@ -1201,6 +1282,23 @@ fn handle_openat(
                 });
             }
             if reports_write {
+                if query_enabled {
+                    let qid = *next_query_id;
+                    *next_query_id += 1;
+                    return Ok(NotificationResult::Query(
+                        qid,
+                        Trap::filesystem_query(
+                            TrapOperation::Write,
+                            resolved,
+                            path,
+                            "openat",
+                            open_flags(flags),
+                            reason,
+                            process_context(request.pid),
+                            qid,
+                        ),
+                    ));
+                }
                 denials.record(Denial::Filesystem(
                     TrapOperation::Write,
                     resolved.clone(),
@@ -1381,6 +1479,8 @@ fn handle_mutation(
     policy: &AccessPolicy,
     request: &libc::seccomp_notif,
     denials: &mut Denials,
+    query_enabled: bool,
+    next_query_id: &mut u64,
 ) -> SysResult<NotificationResult> {
     let syscall = i64::from(request.data.nr);
     let Some(spec) = MUTATION_SYSCALLS.iter().find(|s| s.nr == Some(syscall)) else {
@@ -1403,6 +1503,23 @@ fn handle_mutation(
         let raw = resolve_child_path(pid, dirfd, &path)?;
         let resolved = normalize_path(&raw);
         if is_write_denied(policy, &resolved, &normalize_path_lexically(&raw)) {
+            if query_enabled {
+                let qid = *next_query_id;
+                *next_query_id += 1;
+                return Ok(NotificationResult::Query(
+                    qid,
+                    Trap::filesystem_query(
+                        TrapOperation::Write,
+                        resolved,
+                        path,
+                        spec.name,
+                        Vec::new(),
+                        "deny_match",
+                        process_context(request.pid),
+                        qid,
+                    ),
+                ));
+            }
             denials.record(Denial::Filesystem(
                 TrapOperation::Write,
                 resolved,
@@ -1448,6 +1565,42 @@ fn read_child_string(pid: Pid, addr: usize, max_len: usize) -> SysResult<Vec<u8>
     let null_pos = buf[..n].iter().position(|b| *b == 0).unwrap_or(n);
     buf.truncate(null_pos);
     Ok(buf)
+}
+
+fn process_control_responses(
+    control_fd: i32,
+    pending_queries: &mut std::collections::HashMap<u64, libc::seccomp_notif>,
+    notify_fd: RawFd,
+) {
+    let mut buf = [0u8; 4096];
+    // SAFETY: read(2) copies bytes from the live buffer.
+    let n = unsafe { libc::read(control_fd, buf.as_mut_ptr().cast(), buf.len()) };
+    if n <= 0 {
+        return;
+    }
+    let Ok(n) = usize::try_from(n) else {
+        return;
+    };
+    let text = &buf[..n];
+    for line in text.split(|b| *b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(response): std::result::Result<ControlResponse, _> = serde_json::from_slice(line)
+        else {
+            continue;
+        };
+        if let Some(request_data) = pending_queries.remove(&response.query_id) {
+            let id = request_data.id;
+            if validate_notification_id(notify_fd, id).unwrap_or(false) {
+                let resp = match response.action {
+                    ControlAction::Allow => notification_continue(id),
+                    ControlAction::Deny => notification_error(id, libc::EACCES),
+                };
+                let _ = respond_notification(notify_fd, resp);
+            }
+        }
+    }
 }
 
 fn resolve_child_path(pid: Pid, dirfd: i32, path: &Path) -> SysResult<PathBuf> {
@@ -1513,27 +1666,9 @@ fn is_write_denied(policy: &AccessPolicy, canonical: &Path, lexical: &Path) -> b
 }
 
 fn sockopt(fd: RawFd, level: libc::c_int, name: libc::c_int) -> SysResult<i32> {
-    let mut value = 0;
-    let mut len = libc::socklen_t::try_from(mem::size_of_val(&value))
-        .map_err(|_| BrokerError::InvalidAddress)?;
-
-    // SAFETY: value and len point to initialized storage for getsockopt(2) to update.
-    let rc = unsafe {
-        libc::getsockopt(
-            fd,
-            level,
-            name,
-            ptr::addr_of_mut!(value).cast::<libc::c_void>(),
-            &mut len,
-        )
-    };
-    if rc < 0 {
-        Err(BrokerError::SystemCall {
-            errno: Errno::last() as i32,
-        })
-    } else {
-        Ok(value)
-    }
+    super::fd::getsockopt_int(fd, level, name).map_err(|error| BrokerError::SystemCall {
+        errno: error.raw_os_error().unwrap_or(0),
+    })
 }
 
 fn send_fd(socket: &UnixStream, fd: RawFd) -> Result<()> {
@@ -1643,6 +1778,7 @@ struct TcpEndpoint {
 enum NotificationResult {
     Value(i64),
     Continue,
+    Query(u64, Trap),
 }
 
 struct NotificationSyscalls {

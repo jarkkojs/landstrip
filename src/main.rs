@@ -63,7 +63,15 @@ fn run_with_cli(cli: &Cli) -> Result<()> {
     } else {
         TrapFd::from_fd(cli.trap_fd)
     };
-    platform::execute(&policy, &cli.tool, &cli.tool_args, &trap_fd)?;
 
-    Ok(())
+    let result = platform::execute(&policy, &cli.tool, &cli.tool_args, &trap_fd);
+
+    // The Linux broker streams traps live; the static-profile platforms only ever
+    // produce a terminal trap, so route it to the trap sink here.
+    #[cfg(not(target_os = "linux"))]
+    if let Err(ref trap) = result {
+        trap_fd.write(trap);
+    }
+
+    result
 }

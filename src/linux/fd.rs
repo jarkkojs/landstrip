@@ -98,6 +98,28 @@ pub(super) fn close_inherited_fds() {
     }
 }
 
+/// Reads an integer-valued socket option via `getsockopt(2)`.
+pub(crate) fn getsockopt_int(fd: i32, level: i32, name: i32) -> std::io::Result<i32> {
+    // SAFETY: getsockopt writes a scalar into value; len bounds the storage.
+    let mut value: i32 = 0;
+    #[allow(clippy::cast_possible_truncation)]
+    let mut len: libc::socklen_t = std::mem::size_of_val(&value) as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            fd,
+            level,
+            name,
+            (&raw mut value).cast::<libc::c_void>(),
+            &mut len,
+        )
+    };
+    if rc < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(value)
+    }
+}
+
 fn close_fd(fd: RawFd) {
     if fd < FIRST_INHERITED_FD {
         return;

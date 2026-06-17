@@ -12,6 +12,8 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TrapFd {
+    // A raw descriptor is a unix-only `--trap-fd` concept; other platforms use the file sink.
+    #[cfg_attr(not(unix), allow(dead_code))]
     fd: Option<i32>,
     file: Option<PathBuf>,
 }
@@ -33,6 +35,13 @@ impl TrapFd {
         self.fd.is_some() || self.file.is_some()
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn is_socket(&self) -> bool {
+        self.fd.is_some_and(|fd| {
+            crate::platform::fd::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_TYPE).is_ok()
+        })
+    }
+
     #[cfg(unix)]
     pub(crate) fn close(&self) {
         if let Some(fd) = self.fd {
@@ -40,8 +49,10 @@ impl TrapFd {
         }
     }
 
-    #[cfg(not(unix))]
-    pub(crate) fn close(&self) {}
+    #[cfg(target_os = "linux")]
+    pub(crate) fn fd(&self) -> Option<i32> {
+        self.fd
+    }
 
     pub(crate) fn write(&self, trap: &Trap) {
         let Ok(line) = serde_json::to_string(trap) else {
@@ -49,15 +60,19 @@ impl TrapFd {
         };
         let line = format!("{line}\n");
 
+        #[cfg(unix)]
         if let Some(fd) = self.fd {
             write_trap_fd(fd, line.as_bytes());
-        } else if let Some(ref path) = self.file {
+            return;
+        }
+
+        if let Some(ref path) = self.file {
             write_trap_file(path, line.as_bytes());
         }
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn write_trap_fd(fd: i32, line: &[u8]) {
     let mut remaining = line;
     while !remaining.is_empty() {

@@ -3,7 +3,7 @@
 
 //! Linux sandbox platform using Landlock and seccomp.
 
-mod fd;
+pub(crate) mod fd;
 mod landlock;
 mod seccomp;
 
@@ -17,6 +17,7 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::process::CommandExt;
 use std::process::{self, Command};
 
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn execute(
     policy: &AccessPolicy,
     tool: &OsStr,

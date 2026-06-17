@@ -50,6 +50,8 @@ pub(crate) struct ProcessContext {
 #[derive(Debug, Serialize)]
 pub(crate) struct FilesystemTrap {
     pub(crate) code: &'static str,
+    pub(crate) state: &'static str,
+    pub(crate) query_id: u64,
     pub(crate) operation: TrapOperation,
     pub(crate) path: PathBuf,
     pub(crate) requested_path: PathBuf,
@@ -120,6 +122,57 @@ impl Trap {
         reason: &'static str,
         process: ProcessContext,
     ) -> Self {
+        Self::filesystem_trap(
+            operation,
+            path,
+            requested_path,
+            syscall,
+            flags,
+            reason,
+            process,
+            "info",
+            0,
+        )
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn filesystem_query(
+        operation: TrapOperation,
+        path: PathBuf,
+        requested_path: PathBuf,
+        syscall: &'static str,
+        flags: Vec<&'static str>,
+        reason: &'static str,
+        process: ProcessContext,
+        query_id: u64,
+    ) -> Self {
+        Self::filesystem_trap(
+            operation,
+            path,
+            requested_path,
+            syscall,
+            flags,
+            reason,
+            process,
+            "query",
+            query_id,
+        )
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[allow(clippy::too_many_arguments)]
+    fn filesystem_trap(
+        operation: TrapOperation,
+        path: PathBuf,
+        requested_path: PathBuf,
+        syscall: &'static str,
+        flags: Vec<&'static str>,
+        reason: &'static str,
+        process: ProcessContext,
+        state: &'static str,
+        query_id: u64,
+    ) -> Self {
         let code = match operation {
             TrapOperation::Read => "FS_READ_DENIED",
             TrapOperation::Write => "FS_WRITE_DENIED",
@@ -132,6 +185,8 @@ impl Trap {
         suggested_grant.insert(grant_key, path.clone());
         Self::Filesystem(Box::new(FilesystemTrap {
             code,
+            state,
+            query_id,
             operation,
             path,
             requested_path,
