@@ -18,12 +18,44 @@ pub(crate) enum TrapOperation {
     Write,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+pub(crate) struct ProcessContext {
+    pub(crate) pid: u32,
+    pub(crate) exe: Option<PathBuf>,
+    pub(crate) cwd: Option<PathBuf>,
+}
+#[derive(Debug, Serialize)]
+pub(crate) struct FilesystemTrap {
+    pub(crate) code: &'static str,
+    pub(crate) operation: TrapOperation,
+    pub(crate) path: PathBuf,
+    pub(crate) requested_path: PathBuf,
+    pub(crate) syscall: &'static str,
+    pub(crate) errno: &'static str,
+    pub(crate) flags: Vec<&'static str>,
+    pub(crate) reason: &'static str,
+    pub(crate) suggested_grant: BTreeMap<&'static str, PathBuf>,
+    pub(crate) process: ProcessContext,
+    pub(crate) mechanism: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct NetworkTrap {
+    pub(crate) code: &'static str,
+    pub(crate) operation: &'static str,
+    pub(crate) target: String,
+    pub(crate) syscall: &'static str,
+    pub(crate) errno: &'static str,
+    pub(crate) mechanism: &'static str,
+    pub(crate) process: ProcessContext,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) enum Trap {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    Filesystem(TrapOperation, PathBuf, String),
+    Filesystem(Box<FilesystemTrap>),
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    Network(String, String, String),
+    Network(Box<NetworkTrap>),
     Launch(String, String),
     Usage(String),
     Internal(BTreeMap<String, String>),
@@ -32,6 +64,63 @@ pub(crate) enum Trap {
 impl Trap {
     pub(crate) fn internal() -> Self {
         Self::Internal(BTreeMap::new())
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn filesystem(
+        operation: TrapOperation,
+        path: PathBuf,
+        requested_path: PathBuf,
+        syscall: &'static str,
+        flags: Vec<&'static str>,
+        reason: &'static str,
+        process: ProcessContext,
+    ) -> Self {
+        let code = match operation {
+            TrapOperation::Read => "FS_READ_DENIED",
+            TrapOperation::Write => "FS_WRITE_DENIED",
+        };
+        let grant_key = match operation {
+            TrapOperation::Read => "allowRead",
+            TrapOperation::Write => "allowWrite",
+        };
+        let mut suggested_grant = BTreeMap::new();
+        suggested_grant.insert(grant_key, path.clone());
+        Self::Filesystem(Box::new(FilesystemTrap {
+            code,
+            operation,
+            path,
+            requested_path,
+            syscall,
+            errno: "EACCES",
+            flags,
+            reason,
+            suggested_grant,
+            process,
+            mechanism: "seccomp",
+        }))
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn network(
+        operation: &'static str,
+        target: String,
+        process: ProcessContext,
+    ) -> Self {
+        let code = match operation {
+            "connect" => "NET_CONNECT_DENIED",
+            "bind" => "NET_BIND_DENIED",
+            _ => "NET_DENIED",
+        };
+        Self::Network(Box::new(NetworkTrap {
+            code,
+            operation,
+            target,
+            syscall: operation,
+            errno: "EACCES",
+            mechanism: "seccomp",
+            process,
+        }))
     }
 
     pub(crate) fn with_detail(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {

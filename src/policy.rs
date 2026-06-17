@@ -29,7 +29,9 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) struct AccessPolicy {
     pub(crate) write_roots: Vec<PathBuf>,
+    pub(crate) write_denied_roots: Vec<PathBuf>,
     pub(crate) read_access: ReadAccess,
+    pub(crate) read_denied_roots: Vec<PathBuf>,
     pub(crate) network_access: NetworkAccess,
     pub(crate) windows: WindowsPolicy,
 }
@@ -112,7 +114,9 @@ pub(crate) fn resolve_policy(
 
     Ok(AccessPolicy {
         write_roots,
+        write_denied_roots: write_deny,
         read_access,
+        read_denied_roots: read_deny,
         network_access: lower_network_policy(network, &policy_base, home)?,
         windows: lower_windows_policy(windows),
     })

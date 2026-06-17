@@ -16,7 +16,7 @@ use super::fd::close_inherited_fds;
 use super::landlock::{LandlockFeatures, enforce_access_policy};
 use crate::paths::normalize_path;
 use crate::policy::{AccessPolicy, ReadAccess, UnixSocketAccess};
-use crate::trap::{Result, Trap, TrapOperation};
+use crate::trap::{ProcessContext, Result, Trap, TrapOperation};
 use crate::trap_fd::TrapFd;
 use nix::errno::Errno;
 use nix::fcntl::{FcntlArg, fcntl};
@@ -314,25 +314,41 @@ impl NetworkOperation {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum Denial {
-    Filesystem(TrapOperation, PathBuf),
-    Network(NetworkOperation, String),
+    Filesystem(
+        TrapOperation,
+        PathBuf,
+        PathBuf,
+        &'static str,
+        Vec<&'static str>,
+        &'static str,
+        ProcessContext,
+    ),
+    Network(NetworkOperation, String, ProcessContext),
 }
 
 impl Denial {
     fn report_on_success(&self) -> bool {
         match self {
-            Self::Filesystem(operation, _) => *operation == TrapOperation::Write,
-            Self::Network(_, _) => true,
+            Self::Filesystem(operation, _, _, _, _, _, _) => *operation == TrapOperation::Write,
+            Self::Network(_, _, _) => true,
         }
     }
 
     fn into_trap(self) -> Trap {
         match self {
-            Self::Filesystem(operation, path) => {
-                Trap::Filesystem(operation, path, "seccomp".to_owned())
+            Self::Filesystem(operation, path, requested_path, syscall, flags, reason, process) => {
+                Trap::filesystem(
+                    operation,
+                    path,
+                    requested_path,
+                    syscall,
+                    flags,
+                    reason,
+                    process,
+                )
             }
-            Self::Network(operation, target) => {
-                Trap::Network(operation.as_str().to_owned(), target, "seccomp".to_owned())
+            Self::Network(operation, target, process) => {
+                Trap::network(operation.as_str(), target, process)
             }
         }
     }
@@ -505,6 +521,14 @@ fn system_errno(errno: i32) -> Trap {
     Trap::internal().with_detail("errno", errno.to_string())
 }
 
+fn process_context(pid: u32) -> ProcessContext {
+    ProcessContext {
+        pid,
+        exe: fs::read_link(format!("/proc/{pid}/exe")).ok(),
+        cwd: fs::read_link(format!("/proc/{pid}/cwd")).ok(),
+    }
+}
+
 fn handle_bind(
     policy: &AccessPolicy,
     request: &libc::seccomp_notif,
@@ -519,6 +543,7 @@ fn handle_bind(
                     denials.record(Denial::Network(
                         NetworkOperation::Bind,
                         endpoint.addr.to_string(),
+                        process_context(request.pid),
                     ));
                 }
                 return Err(BrokerError::PolicyDenied);
@@ -528,6 +553,7 @@ fn handle_bind(
                 denials.record(Denial::Network(
                     NetworkOperation::Bind,
                     endpoint.addr.to_string(),
+                    process_context(request.pid),
                 ));
                 return Err(BrokerError::PolicyDenied);
             }
@@ -561,6 +587,7 @@ fn handle_connect(
                 denials.record(Denial::Network(
                     NetworkOperation::Connect,
                     endpoint.addr.to_string(),
+                    process_context(request.pid),
                 ));
                 return Err(BrokerError::PolicyDenied);
             }
@@ -1126,6 +1153,25 @@ fn path_exists(path: &Path) -> SysResult<bool> {
     })
 }
 
+fn open_flags(flags: i32) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    match flags & libc::O_ACCMODE {
+        libc::O_WRONLY => names.push("O_WRONLY"),
+        libc::O_RDWR => names.push("O_RDWR"),
+        _ => names.push("O_RDONLY"),
+    }
+    if flags & libc::O_CREAT != 0 {
+        names.push("O_CREAT");
+    }
+    if flags & libc::O_TRUNC != 0 {
+        names.push("O_TRUNC");
+    }
+    if flags & libc::O_APPEND != 0 {
+        names.push("O_APPEND");
+    }
+    names
+}
+
 fn handle_openat(
     policy: &AccessPolicy,
     request: &libc::seccomp_notif,
@@ -1148,25 +1194,45 @@ fn handle_openat(
     let reports_write = (flags & (libc::O_CREAT | libc::O_TRUNC | libc::O_APPEND)) != 0;
     let wants_read = (flags & libc::O_WRONLY) == 0;
 
-    if wants_write && check_fs_write(policy, &resolved).is_err() {
-        if (flags & libc::O_CREAT) == 0 && !path_exists(&resolved)? {
-            return Err(BrokerError::SystemCall {
-                errno: libc::ENOENT,
-            });
+    if wants_write {
+        if let Some(reason) = fs_write_denial_reason(policy, &resolved) {
+            if (flags & libc::O_CREAT) == 0 && !path_exists(&resolved)? {
+                return Err(BrokerError::SystemCall {
+                    errno: libc::ENOENT,
+                });
+            }
+            if reports_write {
+                denials.record(Denial::Filesystem(
+                    TrapOperation::Write,
+                    resolved.clone(),
+                    path.clone(),
+                    "openat",
+                    open_flags(flags),
+                    reason,
+                    process_context(request.pid),
+                ));
+            }
+            return Err(BrokerError::PolicyDenied);
         }
-        if reports_write {
-            denials.record(Denial::Filesystem(TrapOperation::Write, resolved.clone()));
-        }
-        return Err(BrokerError::PolicyDenied);
     }
-    if wants_read && check_fs_read(policy, &resolved).is_err() {
-        if !path_exists(&resolved)? {
-            return Err(BrokerError::SystemCall {
-                errno: libc::ENOENT,
-            });
+    if wants_read {
+        if let Some(reason) = fs_read_denial_reason(policy, &resolved) {
+            if !path_exists(&resolved)? {
+                return Err(BrokerError::SystemCall {
+                    errno: libc::ENOENT,
+                });
+            }
+            denials.record(Denial::Filesystem(
+                TrapOperation::Read,
+                resolved,
+                path,
+                "openat",
+                open_flags(flags),
+                reason,
+                process_context(request.pid),
+            ));
+            return Err(BrokerError::PolicyDenied);
         }
-        denials.record(Denial::Filesystem(TrapOperation::Read, resolved));
-        return Err(BrokerError::PolicyDenied);
     }
 
     Ok(NotificationResult::Continue)
@@ -1252,35 +1318,50 @@ fn resolve_child_path(pid: Pid, dirfd: i32, path: &Path) -> SysResult<PathBuf> {
     Ok(normalize_path(&dir_path.join(path)))
 }
 
-fn check_fs_read(policy: &AccessPolicy, path: &Path) -> SysResult<()> {
+fn fs_read_denial_reason(policy: &AccessPolicy, path: &Path) -> Option<&'static str> {
     match &policy.read_access {
-        ReadAccess::Unrestricted => Ok(()),
+        ReadAccess::Unrestricted => None,
         ReadAccess::AllowRoots(roots) => {
             if roots
                 .iter()
                 .any(|root| path == root || path.starts_with(root))
             {
-                return Ok(());
+                return None;
             }
-            Err(BrokerError::PolicyDenied)
+            if policy
+                .read_denied_roots
+                .iter()
+                .any(|root| path == root || path.starts_with(root))
+            {
+                Some("deny_read_match")
+            } else {
+                Some("not_in_allow_read")
+            }
         }
     }
 }
 
-fn check_fs_write(policy: &AccessPolicy, path: &Path) -> SysResult<()> {
-    if policy.write_roots.is_empty() {
-        return Err(BrokerError::PolicyDenied);
-    }
+fn check_fs_read(policy: &AccessPolicy, path: &Path) -> SysResult<()> {
+    fs_read_denial_reason(policy, path).map_or(Ok(()), |_| Err(BrokerError::PolicyDenied))
+}
 
+fn fs_write_denial_reason(policy: &AccessPolicy, path: &Path) -> Option<&'static str> {
     if policy
         .write_roots
         .iter()
         .any(|root| path == root || path.starts_with(root))
     {
-        return Ok(());
+        return None;
     }
-
-    Err(BrokerError::PolicyDenied)
+    if policy
+        .write_denied_roots
+        .iter()
+        .any(|root| path == root || path.starts_with(root))
+    {
+        Some("deny_write_match")
+    } else {
+        Some("not_in_allow_write")
+    }
 }
 
 fn sockopt(fd: RawFd, level: libc::c_int, name: libc::c_int) -> SysResult<i32> {

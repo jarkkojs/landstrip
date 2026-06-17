@@ -83,7 +83,7 @@ expect_success_no_access_denied() {
     output=$({ "$@"; } 2>&1)
     status=$?
     set -e
-    if [ "$status" -eq 0 ] && ! printf '%s\n' "$output" | grep -F -q '"Filesystem":['; then
+    if [ "$status" -eq 0 ] && ! printf '%s\n' "$output" | grep -F -q '"Filesystem":{'; then
         pass "$name"
     else
         fail "$name" "status=$status output=$output"
@@ -114,7 +114,7 @@ expect_success_access_denied() {
     fi
     has_structured_denial=0
     if [ "$has_expected_structured_file" -eq 1 ] && \
-        printf '%s\n' "$output" | grep -F -q '"Filesystem":[' && \
+        printf '%s\n' "$output" | grep -F -q '"Filesystem":{' && \
         printf '%s\n' "$output" | grep -F -q "\"$expected_operation\""; then
         has_structured_denial=1
     fi
@@ -154,9 +154,17 @@ expect_trap_fd_write_denied() {
     fi
 
     if [ "$status" -ne 0 ] && [ "$has_expected_file" -eq 1 ] && \
-        grep -F -q '"Filesystem":[' "$diag" && \
+        grep -F -q '"Filesystem":{' "$diag" && \
         grep -F -q '"write"' "$diag" && \
         grep -F -q '"seccomp"' "$diag" && \
+        grep -F -q '"code":"FS_WRITE_DENIED"' "$diag" && \
+        grep -F -q '"syscall":"openat"' "$diag" && \
+        grep -F -q '"errno":"EACCES"' "$diag" && \
+        grep -F -q '"O_CREAT"' "$diag" && \
+        grep -F -q '"requested_path"' "$diag" && \
+        grep -F -q '"reason":"not_in_allow_write"' "$diag" && \
+        grep -F -q '"suggested_grant":{"allowWrite"' "$diag" && \
+        grep -F -q '"process":{"pid"' "$diag" && \
         ! printf '%s\n' "$output" | grep -F -q 'fd3-inherited'; then
         pass "$name"
     else
@@ -184,7 +192,7 @@ expect_failure_access_denied() {
     fi
     if [ "$status" -ne 0 ] && [ "$has_expected_file" -eq 1 ] && \
         printf '%s\n' "$output" | grep -F -q \
-        -e '"Filesystem":[' \
+        -e '"Filesystem":{' \
         -e 'Operation not permitted'; then
         pass "$name"
     else
@@ -296,7 +304,7 @@ expect_connect_denied() {
     status=$?
     set -e
     if [ "$status" -ne 0 ] && \
-        grep -F -q '"Network":["connect",' "$out" && \
+        grep -F -q '"Network":{"code":"NET_CONNECT_DENIED"' "$out" && \
         grep -F -q "\"127.0.0.1:$port\"" "$out" && \
         grep -F -q '"seccomp"' "$out"; then
         pass "$name"
