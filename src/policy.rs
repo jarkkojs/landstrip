@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 pub(crate) struct AccessPolicy {
     pub(crate) write_roots: Vec<PathBuf>,
     pub(crate) write_denied_roots: Vec<PathBuf>,
+    pub(crate) write_denied_links: Vec<PathBuf>,
     pub(crate) read_access: ReadAccess,
     pub(crate) read_denied_roots: Vec<PathBuf>,
     pub(crate) network_access: NetworkAccess,
@@ -99,6 +100,7 @@ pub(crate) fn resolve_policy(
 
     let write_allow = resolve_paths(&filesystem.allow_write, &policy_base, home)?;
     let write_deny = resolve_paths(&filesystem.deny_write, &policy_base, home)?;
+    let write_denied_links = collect_symlink_ancestors(&filesystem.deny_write, &policy_base, home)?;
 
     let read_allow = resolve_paths(&filesystem.allow_read, &policy_base, home)?;
     let read_deny = resolve_paths(&filesystem.deny_read, &policy_base, home)?;
@@ -114,6 +116,7 @@ pub(crate) fn resolve_policy(
     Ok(AccessPolicy {
         write_roots: write_allow,
         write_denied_roots: write_deny,
+        write_denied_links,
         read_access,
         read_denied_roots: read_deny,
         network_access: lower_network_policy(network, &policy_base, home)?,
@@ -245,6 +248,30 @@ fn resolve_paths(
     normalize_policy_roots(&mut resolved);
 
     Ok(resolved)
+}
+
+fn collect_symlink_ancestors(
+    paths: &[String],
+    policy_base: &Path,
+    home: Option<&Path>,
+) -> Result<Vec<PathBuf>> {
+    let mut links = Vec::new();
+    for path in paths {
+        let resolved = resolve_sandbox_path(path, policy_base, home)?;
+        let mut current = PathBuf::new();
+        for component in resolved.components() {
+            current.push(component);
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    links.push(normalize_path_lexically(&current));
+                }
+                _ => {}
+            }
+        }
+    }
+    links.sort_unstable();
+    links.dedup();
+    Ok(links)
 }
 
 #[cfg(target_os = "macos")]

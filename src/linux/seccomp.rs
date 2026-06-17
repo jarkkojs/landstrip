@@ -14,7 +14,7 @@
 
 use super::fd::close_inherited_fds;
 use super::landlock::{LandlockFeatures, enforce_access_policy};
-use crate::paths::normalize_path;
+use crate::paths::{normalize_path, normalize_path_lexically};
 use crate::policy::{AccessPolicy, ReadAccess, UnixSocketAccess};
 use crate::trap::{NetworkOperation, ProcessContext, Result, Trap, TrapOperation};
 use crate::trap_fd::TrapFd;
@@ -1174,14 +1174,27 @@ fn handle_openat(
         return Ok(NotificationResult::Continue);
     };
 
-    let resolved = resolve_child_path(pid, dirfd, &path)?;
+    let raw = resolve_child_path(pid, dirfd, &path)?;
+    let resolved = normalize_path(&raw);
     let wants_write =
         (flags & (libc::O_WRONLY | libc::O_RDWR | libc::O_CREAT | libc::O_TRUNC)) != 0;
     let reports_write = (flags & (libc::O_CREAT | libc::O_TRUNC | libc::O_APPEND)) != 0;
     let wants_read = (flags & libc::O_WRONLY) == 0;
 
     if wants_write {
-        if let Some(reason) = fs_write_denial_reason(policy, &resolved) {
+        let lexical = normalize_path_lexically(&raw);
+        let reason = if is_write_denied(policy, &resolved, &lexical) {
+            Some("deny_match")
+        } else if policy
+            .write_roots
+            .iter()
+            .any(|root| resolved == *root || resolved.starts_with(root))
+        {
+            None
+        } else {
+            Some("allow_miss")
+        };
+        if let Some(reason) = reason {
             if (flags & libc::O_CREAT) == 0 && !path_exists(&resolved)? {
                 return Err(BrokerError::SystemCall {
                     errno: libc::ENOENT,
@@ -1238,7 +1251,7 @@ fn handle_fstatat(
         return Ok(NotificationResult::Continue);
     };
 
-    let resolved = resolve_child_path(pid, dirfd, &path)?;
+    let resolved = normalize_path(&resolve_child_path(pid, dirfd, &path)?);
     if check_fs_read(policy, &resolved).is_err() {
         if !path_exists(&resolved)? {
             return Err(BrokerError::SystemCall {
@@ -1387,12 +1400,9 @@ fn handle_mutation(
         let Some(path) = read_child_path(pid, path_ptr)? else {
             continue;
         };
-        let resolved = resolve_child_path(pid, dirfd, &path)?;
-        if policy
-            .write_denied_roots
-            .iter()
-            .any(|root| resolved == *root || resolved.starts_with(root))
-        {
+        let raw = resolve_child_path(pid, dirfd, &path)?;
+        let resolved = normalize_path(&raw);
+        if is_write_denied(policy, &resolved, &normalize_path_lexically(&raw)) {
             denials.record(Denial::Filesystem(
                 TrapOperation::Write,
                 resolved,
@@ -1442,7 +1452,7 @@ fn read_child_string(pid: Pid, addr: usize, max_len: usize) -> SysResult<Vec<u8>
 
 fn resolve_child_path(pid: Pid, dirfd: i32, path: &Path) -> SysResult<PathBuf> {
     if path.is_absolute() {
-        return Ok(normalize_path(path));
+        return Ok(path.to_path_buf());
     }
 
     if dirfd == libc::AT_FDCWD {
@@ -1450,7 +1460,7 @@ fn resolve_child_path(pid: Pid, dirfd: i32, path: &Path) -> SysResult<PathBuf> {
             fs::read_link(format!("/proc/{pid}/cwd")).map_err(|error| BrokerError::SystemCall {
                 errno: error.raw_os_error().unwrap_or(libc::EIO),
             })?;
-        return Ok(normalize_path(&cwd.join(path)));
+        return Ok(cwd.join(path));
     }
 
     // dirfd is a file descriptor; resolve relative to /proc/<pid>/fd/<dirfd>
@@ -1459,7 +1469,7 @@ fn resolve_child_path(pid: Pid, dirfd: i32, path: &Path) -> SysResult<PathBuf> {
             errno: error.raw_os_error().unwrap_or(libc::EBADF),
         }
     })?;
-    Ok(normalize_path(&dir_path.join(path)))
+    Ok(dir_path.join(path))
 }
 
 fn fs_read_denial_reason(policy: &AccessPolicy, path: &Path) -> Option<&'static str> {
@@ -1489,22 +1499,17 @@ fn check_fs_read(policy: &AccessPolicy, path: &Path) -> SysResult<()> {
     fs_read_denial_reason(policy, path).map_or(Ok(()), |_| Err(BrokerError::PolicyDenied))
 }
 
-fn fs_write_denial_reason(policy: &AccessPolicy, path: &Path) -> Option<&'static str> {
-    if policy
+/// Lexical path is matched against the denied symlink ancestors so a link swap
+/// cannot relocate the target out from under the canonical deny.
+fn is_write_denied(policy: &AccessPolicy, canonical: &Path, lexical: &Path) -> bool {
+    policy
         .write_denied_roots
         .iter()
-        .any(|root| path == root || path.starts_with(root))
-    {
-        return Some("deny_match");
-    }
-    if policy
-        .write_roots
-        .iter()
-        .any(|root| path == root || path.starts_with(root))
-    {
-        return None;
-    }
-    Some("allow_miss")
+        .any(|root| canonical == root || canonical.starts_with(root))
+        || policy
+            .write_denied_links
+            .iter()
+            .any(|root| lexical == root || lexical.starts_with(root))
 }
 
 fn sockopt(fd: RawFd, level: libc::c_int, name: libc::c_int) -> SysResult<i32> {

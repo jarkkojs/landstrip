@@ -383,6 +383,19 @@ if [ "$os_name" = Linux ]; then
     test_fail "denyWrite denies unlink in denied subtree" "$policy" "$sandbox_shell" -c 'rm -f "$1/keep-me"' _ "$tmp/allowed/sub"
 fi
 
+# A denyWrite path that traverses a symlink must not be bypassable by swapping
+# the symlink for a real directory, nor may the symlink itself be removed.
+if [ "$os_name" = Linux ]; then
+    link_root="$tmp/symlink-root"
+    mkdir -p "$link_root/decoy"
+    : > "$link_root/decoy/secret"
+    ln -s decoy "$link_root/link"
+    policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s"],"denyWrite":["%s/link/secret"],"denyRead":["/"],"allowRead":["/"]}}' "$link_root" "$link_root")
+    test_fail "denyWrite blocks symlink-swap replacement attack" "$policy" "$sandbox_shell" -c 'rm "$1/link" && mkdir "$1/link" && echo evil > "$1/link/secret"' _ "$link_root"
+    test_fail "denyWrite blocks removing a symlink ancestor" "$policy" "$sandbox_shell" -c 'rm "$1/link"' _ "$link_root"
+    test_ok "denyWrite permits unrelated write under symlink root" "$policy" "$sandbox_shell" -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ "$link_root"
+fi
+
 policy=$(write_policy '{"network":{"httpProxyPort":0},"filesystem":{"denyRead":["/"],"allowRead":["/"]}}')
 test_fail "httpProxyPort zero is rejected" "$policy" "$sandbox_shell" -c 'printf ok\\n'
 
