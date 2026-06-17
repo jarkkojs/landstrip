@@ -19,7 +19,7 @@ pub(crate) fn execute(
     policy: &AccessPolicy,
     tool: &OsStr,
     args: &[OsString],
-    trap_fd: TrapFd,
+    trap_fd: &TrapFd,
 ) -> Result<()> {
     let profile = render_profile(policy).map_err(Trap::policy_stdin_source)?;
     apply_profile(&profile)?;

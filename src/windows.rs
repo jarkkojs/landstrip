@@ -61,7 +61,7 @@ pub(crate) fn execute(
     policy: &AccessPolicy,
     tool: &OsStr,
     args: &[OsString],
-    _trap_fd: TrapFd,
+    _trap_fd: &TrapFd,
 ) -> Result<()> {
     reject_unsupported_policy(policy)?;
 

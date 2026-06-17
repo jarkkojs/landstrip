@@ -58,8 +58,12 @@ fn run_with_cli(cli: &Cli) -> Result<()> {
         &cwd,
     )?;
 
-    let trap_fd = TrapFd::from_fd(cli.trap_fd);
-    platform::execute(&policy, &cli.tool, &cli.tool_args, trap_fd)?;
+    let trap_fd = if let Some(ref path) = cli.trap_file {
+        TrapFd::from_file(path.clone())
+    } else {
+        TrapFd::from_fd(cli.trap_fd)
+    };
+    platform::execute(&policy, &cli.tool, &cli.tool_args, &trap_fd)?;
 
     Ok(())
 }

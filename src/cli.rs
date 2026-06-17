@@ -16,6 +16,7 @@ pub(crate) struct Cli {
     pub(crate) format: PolicyFormat,
     pub(crate) debug: bool,
     pub(crate) trap_fd: Option<i32>,
+    pub(crate) trap_file: Option<PathBuf>,
     pub(crate) tool: OsString,
     pub(crate) tool_args: Vec<OsString>,
 }
@@ -55,6 +56,10 @@ struct CliOptions {
     /// write landstrip trap responses to an already-open file descriptor
     #[argh(option, from_str_fn(parse_trap_fd))]
     trap_fd: Option<i32>,
+
+    /// append landstrip trap responses to a file
+    #[argh(option, from_str_fn(parse_trap_file))]
+    trap_file: Option<PathBuf>,
 
     /// tool to run inside the sandbox, followed by its arguments
     #[argh(positional)]
@@ -118,6 +123,7 @@ fn parse_cli_action(
         format: options.format.unwrap_or(PolicyFormat::Json),
         debug: options.debug,
         trap_fd: options.trap_fd,
+        trap_file: options.trap_file,
         tool,
         tool_args: tool_tail.collect(),
     }))
@@ -139,6 +145,9 @@ fn split_cli_args(args: impl IntoIterator<Item = OsString>) -> (Vec<OsString>, V
             continue;
         }
         if take_option_value(&["--trap-fd"], &arg, &mut option_args, &mut args) {
+            continue;
+        }
+        if take_option_value(&["--trap-file"], &arg, &mut option_args, &mut args) {
             continue;
         }
 
@@ -201,6 +210,13 @@ fn parse_trap_fd(fd: &str) -> std::result::Result<i32, String> {
         return Err("trap fd must be an integer >= 3".to_owned());
     }
     Ok(fd)
+}
+
+fn parse_trap_file(path: &str) -> std::result::Result<PathBuf, String> {
+    if path.is_empty() {
+        return Err("trap file path empty".to_owned());
+    }
+    Ok(PathBuf::from(path))
 }
 
 fn parse_policy_format(format: &str) -> std::result::Result<PolicyFormat, String> {

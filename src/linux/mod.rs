@@ -21,7 +21,7 @@ pub(crate) fn execute(
     policy: &AccessPolicy,
     tool: &OsStr,
     args: &[OsString],
-    trap_fd: TrapFd,
+    trap_fd: &TrapFd,
 ) -> Result<()> {
     let network = &policy.network_access;
     let unrestricted_network = network.is_unrestricted();

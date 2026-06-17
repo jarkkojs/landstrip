@@ -107,7 +107,7 @@ pub(super) fn run_broker(
     args: &[OsString],
     needs_network: bool,
     needs_filesystem: bool,
-    trap_fd: TrapFd,
+    trap_fd: &TrapFd,
 ) -> Result<i32> {
     let notify_unix_sockets = needs_unix_socket_broker(&policy.network_access.unix_socket_access);
     let notify_bind =
@@ -223,9 +223,9 @@ fn supervise_child(
     notify_fd: RawFd,
     syscalls: &NotificationSyscalls,
     notify_filesystem: bool,
-    trap_fd: TrapFd,
+    trap_fd: &TrapFd,
 ) -> Result<i32> {
-    let mut denials = Denials::new(trap_fd);
+    let mut denials = Denials::new(trap_fd.clone());
     loop {
         loop {
             match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
