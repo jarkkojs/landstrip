@@ -452,7 +452,9 @@ fn handle_notification(
         handle_bind(ctx.policy, request, denials)
     } else if syscall == ctx.syscalls.connect {
         handle_connect(ctx.policy, ctx.landlock_features, request, denials)
-    } else if ctx.notify_filesystem && syscall == ctx.syscalls.openat {
+    } else if ctx.notify_filesystem
+        && (syscall == ctx.syscalls.openat || syscall == ctx.syscalls.openat2)
+    {
         handle_openat(
             ctx.policy,
             request,
@@ -1243,6 +1245,57 @@ fn open_flags(flags: i32) -> Vec<&'static str> {
     names
 }
 
+// The open flags and creation mode an open syscall requested.
+struct Open {
+    flags: i32,
+    mode: u32,
+}
+
+impl Open {
+    // openat passes flags and mode as scalar arguments.
+    #[allow(clippy::cast_possible_truncation)]
+    fn from_args(request: &libc::seccomp_notif) -> SysResult<Self> {
+        let args = &request.data.args;
+        let flags = i32::try_from(args[2]).map_err(|_| BrokerError::InvalidAddress)?;
+        Ok(Self {
+            flags,
+            mode: args[3] as u32,
+        })
+    }
+
+    // openat2 passes a struct open_how { u64 flags; u64 mode; u64 resolve; } by
+    // pointer; only the first two fields matter. The kernel requires size >= 24,
+    // but read just the bytes we use.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    fn from_how(request: &libc::seccomp_notif, pid: Pid) -> SysResult<Self> {
+        let args = &request.data.args;
+        let addr = usize::try_from(args[2]).map_err(|_| BrokerError::BadAddress)?;
+        let size = usize::try_from(args[3]).map_err(|_| BrokerError::InvalidAddress)?;
+        if addr == 0 {
+            return Err(BrokerError::BadAddress);
+        }
+        let want = size.min(24);
+        let mut buf = [0u8; 24];
+        let mut local = [IoSliceMut::new(&mut buf[..want])];
+        let target = [RemoteIoVec {
+            base: addr,
+            len: want,
+        }];
+        let n = process_vm_readv(pid, &mut local, &target).map_err(|error| {
+            BrokerError::SystemCall {
+                errno: error as i32,
+            }
+        })?;
+        if n < 16 {
+            return Err(BrokerError::BadAddress);
+        }
+        Ok(Self {
+            flags: u64::from_ne_bytes(buf[0..8].try_into().unwrap()) as i32,
+            mode: u64::from_ne_bytes(buf[8..16].try_into().unwrap()) as u32,
+        })
+    }
+}
+
 fn handle_openat(
     policy: &AccessPolicy,
     request: &libc::seccomp_notif,
@@ -1254,8 +1307,14 @@ fn handle_openat(
     #[allow(clippy::cast_possible_truncation)]
     let dirfd = request.data.args[0] as i32;
     let path_ptr = usize::try_from(request.data.args[1]).map_err(|_| BrokerError::BadAddress)?;
-    let flags = i32::try_from(request.data.args[2]).map_err(|_| BrokerError::InvalidAddress)?;
     let pid = Pid::from_raw(i32::try_from(request.pid).map_err(|_| BrokerError::InvalidAddress)?);
+    let openat2 = i64::from(request.data.nr) == libc::SYS_openat2;
+    let Open { flags, mode } = if openat2 {
+        Open::from_how(request, pid)?
+    } else {
+        Open::from_args(request)?
+    };
+    let syscall_name = if openat2 { "openat2" } else { "openat" };
 
     let Some(path) = read_child_path(pid, path_ptr)? else {
         return Ok(NotificationResult::Continue);
@@ -1291,11 +1350,6 @@ fn handle_openat(
                 if query_enabled {
                     let qid = *next_query_id;
                     *next_query_id += 1;
-                    // The 4th arg is the creation mode (used only with
-                    // O_CREAT/O_TMPFILE). Pin the parent now so an allow can
-                    // reopen it safely after the prompt.
-                    #[allow(clippy::cast_possible_truncation)]
-                    let mode = request.data.args[3] as u32;
                     let grant = Grant::open(&resolved, flags, mode);
                     return Ok(NotificationResult::query(
                         qid,
@@ -1303,7 +1357,7 @@ fn handle_openat(
                             TrapOperation::Write,
                             resolved,
                             path,
-                            "openat",
+                            syscall_name,
                             open_flags(flags),
                             reason,
                             process_context(request.pid),
@@ -1316,7 +1370,7 @@ fn handle_openat(
                     TrapOperation::Write,
                     resolved.clone(),
                     path.clone(),
-                    "openat",
+                    syscall_name,
                     open_flags(flags),
                     reason,
                     process_context(request.pid),
@@ -1336,7 +1390,7 @@ fn handle_openat(
                 TrapOperation::Read,
                 resolved,
                 path,
-                "openat",
+                syscall_name,
                 open_flags(flags),
                 reason,
                 process_context(request.pid),
@@ -2171,6 +2225,7 @@ struct NotificationSyscalls {
     socket: i64,
     socketpair: i64,
     openat: i64,
+    openat2: i64,
     fstatat: i64,
 }
 
@@ -2182,12 +2237,13 @@ impl NotificationSyscalls {
             socket: libc::SYS_socket,
             socketpair: libc::SYS_socketpair,
             openat: libc::SYS_openat,
+            openat2: libc::SYS_openat2,
             fstatat: libc::SYS_newfstatat,
         }
     }
 
-    fn filesystem_syscalls(&self) -> [i64; 2] {
-        [self.openat, self.fstatat]
+    fn filesystem_syscalls(&self) -> [i64; 3] {
+        [self.openat, self.openat2, self.fstatat]
     }
 }
 
