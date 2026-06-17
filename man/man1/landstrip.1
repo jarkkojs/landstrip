@@ -193,14 +193,15 @@ grants can persist after the sandboxed process exits.
 .Sh OUTPUT
 .Nm
 prints trap responses as JSON objects on standard error,
-one object per line. Each object is tagged by the trap kind, with the kind
-name as the single top-level key. Every kind carries a stable
+one object per line. Each object is a flat record with a fixed
+.Va kind
+discriminant and a stable
 .Va code .
 .Bd -literal -offset indent
-{"Internal":{"code":"INTERNAL_ERROR","detail":{"file":"policy.json","source":"expected value at line 1 column 1"}}}
+{"kind":"internal","code":"INTERNAL_ERROR","detail":{"file":"policy.json","source":"expected value at line 1 column 1"}}
 .Ed
 The trap kinds are
-.Va Filesystem
+.Va filesystem
 (a filesystem access denial, with
 .Va code
 .Va FS_READ_DENIED
@@ -218,7 +219,7 @@ of
 .Va seccomp ,
 the user-notification broker being the only layer with a per-denial
 callback ) ,
-.Va Network
+.Va network
 (a denied TCP connect or bind, with
 .Va code
 .Va NET_CONNECT_DENIED
@@ -234,7 +235,7 @@ and a
 .Va target
 of
 .Ar address : Ns Ar port ) ,
-.Va Launch
+.Va launch
 (the tool could not be started, with
 .Va code
 .Va LAUNCH_FAILED
@@ -250,7 +251,7 @@ fields ) ,
 and a
 .Va message
 field), and
-.Va Internal
+.Va internal
 (any other policy, platform, or system error, with
 .Va code
 .Va INTERNAL_ERROR

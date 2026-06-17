@@ -110,34 +110,34 @@ capabilities; without it the container denies all network access.
 ## Error Output
 
 Failures reported by `landstrip` are printed as JSON objects on standard
-error, one object per line. Each object is tagged by the trap kind, with the
-kind name as the single top-level key. Every kind carries a stable `code`, so
-consumers can route on a single field.
+error, one object per line. Each object is a flat record with a fixed `kind`
+discriminant and a stable `code`, so consumers can route on `kind` for the
+coarse grouping and on `code` for the specific case.
 
 ```json
-{"Internal":{"code":"INTERNAL_ERROR","detail":{"file":"policy.json","source":"expected value at line 1 column 1"}}}
+{"kind":"internal","code":"INTERNAL_ERROR","detail":{"file":"policy.json","source":"expected value at line 1 column 1"}}
 ```
 
 ```json
-{"Launch":{"code":"LAUNCH_FAILED","program":"cargo","message":"No such file or directory"}}
+{"kind":"launch","code":"LAUNCH_FAILED","program":"cargo","message":"No such file or directory"}
 ```
 
 The trap kinds are:
 
-- `Filesystem`: a filesystem access denial object. The stable `code` is
+- `filesystem`: a filesystem access denial. The stable `code` is
   `FS_READ_DENIED` or `FS_WRITE_DENIED`; `operation` is `read` or `write`;
   `path` is the resolved path; `requested_path` is the original path supplied by
   the tool when available; `syscall`, `errno`, `flags`, `reason`,
   `suggested_grant`, and `process` provide machine-readable routing context.
-- `Network`: a denied TCP connect or bind object. The stable `code` is
+- `network`: a denied TCP connect or bind. The stable `code` is
   `NET_CONNECT_DENIED` or `NET_BIND_DENIED`; `operation` is `connect` or `bind`;
   `target` is `address:port`; `syscall`, `errno`, and `process` provide routing
   context.
-- `Launch`: the tool could not be started. The stable `code` is `LAUNCH_FAILED`;
+- `launch`: the tool could not be started. The stable `code` is `LAUNCH_FAILED`;
   `program` and `message` give the program and the failure detail.
-- `Usage`: a command-line usage error. The stable `code` is `USAGE_ERROR`;
+- `usage`: a command-line usage error. The stable `code` is `USAGE_ERROR`;
   `message` is the error text. Usage errors exit with status 2.
-- `Internal`: any other policy, platform, or system error. The stable `code` is
+- `internal`: any other policy, platform, or system error. The stable `code` is
   `INTERNAL_ERROR`; `detail` is an object of diagnostic key/value pairs (for
   example `source`, `file`, or platform API details).
 
@@ -154,28 +154,27 @@ Example of a filesystem denial:
 
 ```json
 {
-  "Filesystem": {
-    "code": "FS_WRITE_DENIED",
-    "operation": "write",
-    "path": "/repo/out",
-    "requested_path": "out",
-    "syscall": "openat",
-    "errno": "EACCES",
-    "flags": [
-      "O_WRONLY",
-      "O_CREAT",
-      "O_TRUNC"
-    ],
-    "reason": "allow_miss",
-    "suggested_grant": {
-      "allowWrite": "/repo/out"
-    },
-    "mechanism": "seccomp",
-    "process": {
-      "pid": 1234,
-      "exe": "/usr/bin/sh",
-      "cwd": "/repo"
-    }
+  "kind": "filesystem",
+  "code": "FS_WRITE_DENIED",
+  "operation": "write",
+  "path": "/repo/out",
+  "requested_path": "out",
+  "syscall": "openat",
+  "errno": "EACCES",
+  "flags": [
+    "O_WRONLY",
+    "O_CREAT",
+    "O_TRUNC"
+  ],
+  "reason": "allow_miss",
+  "suggested_grant": {
+    "allowWrite": "/repo/out"
+  },
+  "mechanism": "seccomp",
+  "process": {
+    "pid": 1234,
+    "exe": "/usr/bin/sh",
+    "cwd": "/repo"
   }
 }
 ```
@@ -200,43 +199,41 @@ emitted with the same object shapes as standard error:
 
 ```json
 {
-  "Filesystem": {
-    "code": "FS_WRITE_DENIED",
-    "operation": "write",
-    "path": "/repo/out",
-    "requested_path": "out",
-    "syscall": "openat",
-    "errno": "EACCES",
-    "flags": [
-      "O_WRONLY",
-      "O_CREAT",
-      "O_TRUNC"
-    ],
-    "reason": "allow_miss",
-    "suggested_grant": {
-      "allowWrite": "/repo/out"
-    },
-    "mechanism": "seccomp",
-    "process": {
-      "pid": 1234,
-      "exe": "/usr/bin/sh",
-      "cwd": "/repo"
-    }
+  "kind": "filesystem",
+  "code": "FS_WRITE_DENIED",
+  "operation": "write",
+  "path": "/repo/out",
+  "requested_path": "out",
+  "syscall": "openat",
+  "errno": "EACCES",
+  "flags": [
+    "O_WRONLY",
+    "O_CREAT",
+    "O_TRUNC"
+  ],
+  "reason": "allow_miss",
+  "suggested_grant": {
+    "allowWrite": "/repo/out"
+  },
+  "mechanism": "seccomp",
+  "process": {
+    "pid": 1234,
+    "exe": "/usr/bin/sh",
+    "cwd": "/repo"
   }
 }
 {
-  "Network": {
-    "code": "NET_CONNECT_DENIED",
-    "operation": "connect",
-    "target": "127.0.0.1:9999",
-    "syscall": "connect",
-    "errno": "EACCES",
-    "mechanism": "seccomp",
-    "process": {
-      "pid": 1234,
-      "exe": "/usr/bin/nc",
-      "cwd": "/repo"
-    }
+  "kind": "network",
+  "code": "NET_CONNECT_DENIED",
+  "operation": "connect",
+  "target": "127.0.0.1:9999",
+  "syscall": "connect",
+  "errno": "EACCES",
+  "mechanism": "seccomp",
+  "process": {
+    "pid": 1234,
+    "exe": "/usr/bin/nc",
+    "cwd": "/repo"
   }
 }
 ```

@@ -74,6 +74,7 @@ pub(crate) struct NetworkTrap {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
 pub(crate) enum Trap {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Filesystem(Box<FilesystemTrap>),

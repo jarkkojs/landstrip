@@ -83,7 +83,7 @@ expect_success_no_access_denied() {
     output=$({ "$@"; } 2>&1)
     status=$?
     set -e
-    if [ "$status" -eq 0 ] && ! printf '%s\n' "$output" | grep -F -q '"Filesystem":{'; then
+    if [ "$status" -eq 0 ] && ! printf '%s\n' "$output" | grep -F -q '"kind":"filesystem"'; then
         pass "$name"
     else
         fail "$name" "status=$status output=$output"
@@ -114,7 +114,7 @@ expect_success_access_denied() {
     fi
     has_structured_denial=0
     if [ "$has_expected_structured_file" -eq 1 ] && \
-        printf '%s\n' "$output" | grep -F -q '"Filesystem":{' && \
+        printf '%s\n' "$output" | grep -F -q '"kind":"filesystem"' && \
         printf '%s\n' "$output" | grep -F -q "\"$expected_operation\""; then
         has_structured_denial=1
     fi
@@ -154,7 +154,7 @@ expect_trap_fd_write_denied() {
     fi
 
     if [ "$status" -ne 0 ] && [ "$has_expected_file" -eq 1 ] && \
-        grep -F -q '"Filesystem":{' "$diag" && \
+        grep -F -q '"kind":"filesystem"' "$diag" && \
         grep -F -q '"write"' "$diag" && \
         grep -F -q '"seccomp"' "$diag" && \
         grep -F -q '"code":"FS_WRITE_DENIED"' "$diag" && \
@@ -192,7 +192,7 @@ expect_failure_access_denied() {
     fi
     if [ "$status" -ne 0 ] && [ "$has_expected_file" -eq 1 ] && \
         printf '%s\n' "$output" | grep -F -q \
-        -e '"Filesystem":{' \
+        -e '"kind":"filesystem"' \
         -e 'Operation not permitted'; then
         pass "$name"
     else
@@ -304,7 +304,7 @@ expect_connect_denied() {
     status=$?
     set -e
     if [ "$status" -ne 0 ] && \
-        grep -F -q '"Network":{"code":"NET_CONNECT_DENIED"' "$out" && \
+        grep -F -q '"kind":"network","code":"NET_CONNECT_DENIED"' "$out" && \
         grep -F -q "\"127.0.0.1:$port\"" "$out" && \
         grep -F -q '"seccomp"' "$out"; then
         pass "$name"
