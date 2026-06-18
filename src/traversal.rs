@@ -66,7 +66,10 @@ fn scan_allowed_root(
 
         let metadata = match fs::symlink_metadata(&current) {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    || error.kind() == io::ErrorKind::PermissionDenied =>
+            {
                 results.push(current);
                 continue;
             }
@@ -82,7 +85,14 @@ fn scan_allowed_root(
             continue;
         }
 
-        let entries = fs::read_dir(&current)?;
+        let entries = match fs::read_dir(&current) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                results.push(current);
+                continue;
+            }
+            Err(source) => return Err(source.into()),
+        };
         for entry in entries {
             let entry = entry?;
             let child = entry.path();

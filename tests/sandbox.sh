@@ -383,6 +383,15 @@ if [ "$os_name" = Linux ]; then
     test_fail "denyWrite denies unlink in denied subtree" "$policy" "$sandbox_shell" -c 'rm -f "$1/keep-me"' _ "$tmp/allowed/sub"
 fi
 
+if [ "$os_name" = Linux ]; then
+    mkdir -p "$tmp/unreadable/sub"
+    : > "$tmp/unreadable/sub/secret"
+    chmod 000 "$tmp/unreadable/sub"
+    policy=$(write_policy '{"filesystem":{"allowWrite":["/dev/null"],"denyRead":["%s/unreadable/sub/secret"]}}' "$tmp")
+    test_ok "denyRead spine through unreadable dir does not abort setup" "$policy" "$sandbox_shell" -c 'printf ok\\n'
+    chmod 755 "$tmp/unreadable/sub"
+fi
+
 # A denyWrite path that traverses a symlink must not be bypassable by swapping
 # the symlink for a real directory, nor may the symlink itself be removed.
 if [ "$os_name" = Linux ]; then
