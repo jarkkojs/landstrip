@@ -392,6 +392,17 @@ if [ "$os_name" = Linux ]; then
     chmod 755 "$tmp/unreadable/sub"
 fi
 
+# A denyWrite glob expands by walking its base subtree. A directory in that
+# subtree the broker cannot read must be skipped, not abort the policy.
+if [ "$os_name" = Linux ]; then
+    mkdir -p "$tmp/globwalk/locked"
+    : > "$tmp/globwalk/locked/data"
+    chmod 000 "$tmp/globwalk/locked"
+    policy=$(write_policy '{"filesystem":{"allowWrite":["%s/globwalk","/dev/null"],"denyWrite":["%s/globwalk/**/.env"]}}' "$tmp" "$tmp")
+    test_ok "denyWrite glob over unreadable subtree does not abort setup" "$policy" "$sandbox_shell" -c 'printf ok\\n'
+    chmod 755 "$tmp/globwalk/locked"
+fi
+
 # A denyWrite path that traverses a symlink must not be bypassable by swapping
 # the symlink for a real directory, nor may the symlink itself be removed.
 if [ "$os_name" = Linux ]; then

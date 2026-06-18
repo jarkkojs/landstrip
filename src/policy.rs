@@ -364,7 +364,9 @@ fn expand_glob_path(pattern: &Path) -> Result<Vec<PathBuf>> {
 
     match fs::symlink_metadata(&base) {
         Ok(_) => collect_glob_matches(&base, &pattern, &mut matches, 0)?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound
+                || error.kind() == io::ErrorKind::PermissionDenied => {}
         Err(source) => return Err(source.into()),
     }
 
@@ -414,12 +416,30 @@ fn collect_glob_matches(
         matches.push(candidate.clone());
     }
 
-    let metadata = fs::symlink_metadata(path)?;
+    // A directory the broker cannot stat or read contributes no further glob
+    // matches. Skip it rather than aborting the whole policy: an unreadable
+    // directory is also unreadable to the sandboxed child, and the seccomp
+    // broker still enforces denied paths regardless of glob expansion.
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error)
+            if error.kind() == io::ErrorKind::NotFound
+                || error.kind() == io::ErrorKind::PermissionDenied =>
+        {
+            return Ok(());
+        }
+        Err(source) => return Err(source.into()),
+    };
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Ok(());
     }
 
-    for entry in fs::read_dir(path)? {
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return Ok(()),
+        Err(source) => return Err(source.into()),
+    };
+    for entry in entries {
         collect_glob_matches(&entry?.path(), pattern, matches, depth + 1)?;
     }
 
