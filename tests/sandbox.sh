@@ -403,6 +403,14 @@ if [ "$os_name" = Linux ]; then
     chmod 755 "$tmp/globwalk/locked"
 fi
 
+# stat/metadata of a denyRead path is permitted (tools must stat ancestor
+# directories to canonicalise paths); only reading contents stays blocked.
+mkdir -p "$tmp/secret"
+printf 'topsecret\n' > "$tmp/secret/file"
+policy=$(write_policy '{"filesystem":{"denyRead":["%s/secret"],"allowWrite":["/dev/null"]}}' "$tmp")
+test_ok "stat of a denyRead path is permitted" "$policy" "$sandbox_shell" -c 'test -e "$1"' _ "$tmp/secret/file"
+test_fail "reading a denyRead file is still blocked" "$policy" "$sandbox_shell" -c 'cat "$1"' _ "$tmp/secret/file"
+
 # A denyWrite path that traverses a symlink must not be bypassable by swapping
 # the symlink for a real directory, nor may the symlink itself be removed.
 if [ "$os_name" = Linux ]; then

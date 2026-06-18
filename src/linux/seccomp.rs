@@ -462,8 +462,6 @@ fn handle_notification(
             ctx.query_enabled,
             next_query_id,
         )
-    } else if ctx.notify_filesystem && syscall == ctx.syscalls.fstatat {
-        handle_fstatat(ctx.policy, request)
     } else if ctx.notify_filesystem {
         handle_mutation(
             ctx.policy,
@@ -1422,33 +1420,6 @@ fn handle_openat(
     Ok(NotificationResult::Continue)
 }
 
-fn handle_fstatat(
-    policy: &AccessPolicy,
-    request: &libc::seccomp_notif,
-) -> SysResult<NotificationResult> {
-    // args[0] is dirfd: an i32 (including AT_FDCWD=-100) stored as u64.
-    #[allow(clippy::cast_possible_truncation)]
-    let dirfd = request.data.args[0] as i32;
-    let path_ptr = usize::try_from(request.data.args[1]).map_err(|_| BrokerError::BadAddress)?;
-    let pid = Pid::from_raw(i32::try_from(request.pid).map_err(|_| BrokerError::InvalidAddress)?);
-
-    let Some(path) = read_child_path(pid, path_ptr)? else {
-        return Ok(NotificationResult::Continue);
-    };
-
-    let resolved = normalize_path(&resolve_child_path(pid, dirfd, &path)?);
-    if check_fs_read(policy, &resolved).is_err() {
-        if !path_exists(&resolved)? {
-            return Err(BrokerError::SystemCall {
-                errno: libc::ENOENT,
-            });
-        }
-        return Err(BrokerError::PolicyDenied);
-    }
-
-    Ok(NotificationResult::Continue)
-}
-
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod legacy_syscall {
     pub const RENAME: Option<i64> = Some(libc::SYS_rename);
@@ -2234,10 +2205,6 @@ fn fs_read_denial_reason(policy: &AccessPolicy, path: &Path) -> Option<&'static 
     }
 }
 
-fn check_fs_read(policy: &AccessPolicy, path: &Path) -> SysResult<()> {
-    fs_read_denial_reason(policy, path).map_or(Ok(()), |_| Err(BrokerError::PolicyDenied))
-}
-
 fn sockopt(fd: RawFd, level: libc::c_int, name: libc::c_int) -> SysResult<i32> {
     super::fd::getsockopt_int(fd, level, name).map_err(|error| BrokerError::SystemCall {
         errno: error.raw_os_error().unwrap_or(0),
@@ -2455,7 +2422,6 @@ struct NotificationSyscalls {
     socketpair: i64,
     openat: i64,
     openat2: i64,
-    fstatat: i64,
 }
 
 impl NotificationSyscalls {
@@ -2467,12 +2433,15 @@ impl NotificationSyscalls {
             socketpair: libc::SYS_socketpair,
             openat: libc::SYS_openat,
             openat2: libc::SYS_openat2,
-            fstatat: libc::SYS_newfstatat,
         }
     }
 
-    fn filesystem_syscalls(&self) -> [i64; 3] {
-        [self.openat, self.openat2, self.fstatat]
+    // stat (newfstatat/statx) is intentionally not mediated: blocking metadata
+    // reads breaks directory traversal (git, shells, build tools all stat
+    // ancestor dirs to canonicalise paths), and denyRead still blocks reading
+    // file contents and listing directories via openat.
+    fn filesystem_syscalls(&self) -> [i64; 2] {
+        [self.openat, self.openat2]
     }
 }
 
