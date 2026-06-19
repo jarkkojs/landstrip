@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
-#[cfg(not(target_os = "macos"))]
 use crate::paths::normalize_roots;
-#[cfg(target_os = "macos")]
-use crate::paths::normalize_roots_lexically as normalize_roots;
-use crate::trap::{Result, Trap};
+use crate::policy::AccessPolicyError;
+use anyhow::Result;
 use rayon::prelude::*;
 use std::fs;
 use std::io;
@@ -44,13 +42,7 @@ fn scan_allowed_root(
 
     while let Some((current, is_explicit, depth)) = stack.pop() {
         if depth >= MAX_TRAVERSAL_DEPTH {
-            return Err(Trap::internal().with_detail(
-                "source",
-                format!(
-                    "directory traversal depth exceeded at {}",
-                    current.display()
-                ),
-            ));
+            return Err(AccessPolicyError::TraversalDepth.into());
         }
 
         if denied

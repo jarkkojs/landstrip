@@ -107,158 +107,70 @@ For a filesystem-only sandbox with unrestricted direct network access, set:
 policy enforcement in place. On Windows this grants the AppContainer its network
 capabilities; without it the container denies all network access.
 
-## Error Output
+## Denial Traps
 
-Failures reported by `landstrip` are printed as JSON objects on standard
-error, one object per line. Each object is a flat record with a fixed `kind`
-discriminant and a stable `code`, so consumers can route on `kind` for the
-coarse grouping and on `code` for the specific case.
-
-```json
-{"kind":"internal","code":"INTERNAL_ERROR","detail":{"file":"policy.json","source":"expected value at line 1 column 1"}}
-```
-
-```json
-{"kind":"launch","code":"LAUNCH_FAILED","program":"cargo","message":"No such file or directory"}
-```
-
-The trap kinds are:
-
-- `filesystem`: a filesystem access denial. The stable `code` is
-  `FS_READ_DENIED` or `FS_WRITE_DENIED`; `operation` is `read` or `write`;
-  `path` is the resolved path; `requested_path` is the original path supplied by
-  the tool when available; `syscall`, `errno`, `flags`, `reason`,
-  `suggested_grant`, and `process` provide machine-readable routing context.
-- `network`: a denied TCP connect or bind. The stable `code` is
-  `NET_CONNECT_DENIED` or `NET_BIND_DENIED`; `operation` is `connect` or `bind`;
-  `target` is `address:port`; `syscall`, `errno`, and `process` provide routing
-  context.
-- `launch`: the tool could not be started. The stable `code` is `LAUNCH_FAILED`;
-  `program` and `message` give the program and the failure detail.
-- `internal`: any other policy, platform, or system error. The stable `code` is
-  `INTERNAL_ERROR`; `detail` is an object of diagnostic key/value pairs (for
-  example `source`, `file`, or platform API details).
-
-Usage errors are printed as plain text and exit with status 2.
-
-The `reason` field is a platform-independent classification of the policy
-decision, derived from the policy and the requested path rather than from the
-enforcement mechanism. Its stable values are:
-
-- `allow_miss`: the path matched no allow root and was denied by default.
-- `deny_match`: the path matched an explicit deny root that overrides an allow.
-- `unclassified`: a denial occurred but landstrip could not attribute it to a
-  specific rule.
-
-Example of a filesystem denial:
-
-```json
-{
-  "kind": "filesystem",
-  "code": "FS_WRITE_DENIED",
-  "operation": "write",
-  "path": "/repo/out",
-  "requested_path": "out",
-  "syscall": "openat",
-  "errno": "EACCES",
-  "flags": [
-    "O_WRONLY",
-    "O_CREAT",
-    "O_TRUNC"
-  ],
-  "reason": "allow_miss",
-  "suggested_grant": {
-    "allowWrite": "/repo/out"
-  },
-  "mechanism": "seccomp",
-  "process": {
-    "pid": 1234,
-    "exe": "/usr/bin/sh",
-    "cwd": "/repo"
-  }
-}
-```
-
-Logs and sandboxed tool output are not part of the response. Normal successful
-tool execution does not print a landstrip response unless a write denial was
-observed, because standard error belongs to landstrip; standard output belongs
-to the sandboxed tool.
-
-## Trap FD
-
-Use `--trap-fd FD` to write landstrip trap denial blocks to an
-already-open file descriptor as JSON objects, one per line followed by
-a newline.
+Sandbox denials are reported as JSON objects, one per line, each with a fixed
+`kind` discriminant and a stable `code`. Consumers route on `kind` for coarse
+grouping and on `code` for the policy denial class. Traps go to standard error
+by default; `--trap-fd FD` writes them to an already-open descriptor instead.
 
 ```sh
 landstrip --trap-fd 3 -p policy.json cargo test 3>landstrip-traps.txt
 ```
 
-Linux filesystem and network denials observed by the seccomp broker are
-emitted with the same object shapes as standard error:
+The two trap kinds are:
+
+- `filesystem` (`code` `FILESYSTEM_DENIED`): `operation` is `read` or `write`,
+  `path` is the resolved path, `requested_path` is the tool's original path when
+  available, and `syscall`, `errno`, `flags`, `reason`, `suggested_grant`, and
+  `process` carry routing context.
+- `network` (`code` `NETWORK_DENIED`): `operation` is `connect` or `bind` and
+  `target` is `address:port`, with `syscall`, `errno`, and `process` context.
+
+`reason` is a platform-independent classification of the decision, derived from
+the policy and the requested path:
+
+- `allow_miss`: the path matched no allow root and was denied by default.
+- `deny_match`: the path matched an explicit deny root that overrides an allow.
+
+`mechanism` records the kernel layer that detected the denial. Per-denial traps
+are always `seccomp`, the only layer with a per-denial callback; Landlock
+enforces in-kernel without one.
 
 ```json
 {
   "kind": "filesystem",
-  "code": "FS_WRITE_DENIED",
+  "code": "FILESYSTEM_DENIED",
   "operation": "write",
   "path": "/repo/out",
   "requested_path": "out",
   "syscall": "openat",
   "errno": "EACCES",
-  "flags": [
-    "O_WRONLY",
-    "O_CREAT",
-    "O_TRUNC"
-  ],
+  "flags": ["O_WRONLY", "O_CREAT", "O_TRUNC"],
   "reason": "allow_miss",
-  "suggested_grant": {
-    "allowWrite": "/repo/out"
-  },
+  "suggested_grant": { "allowWrite": "/repo/out" },
   "mechanism": "seccomp",
-  "process": {
-    "pid": 1234,
-    "exe": "/usr/bin/sh",
-    "cwd": "/repo"
-  }
+  "process": { "pid": 1234, "exe": "/usr/bin/sh", "cwd": "/repo" }
 }
 {
   "kind": "network",
-  "code": "NET_CONNECT_DENIED",
+  "code": "NETWORK_DENIED",
   "operation": "connect",
   "target": "127.0.0.1:9999",
   "syscall": "connect",
   "errno": "EACCES",
   "mechanism": "seccomp",
-  "process": {
-    "pid": 1234,
-    "exe": "/usr/bin/nc",
-    "cwd": "/repo"
-  }
+  "process": { "pid": 1234, "exe": "/usr/bin/nc", "cwd": "/repo" }
 }
 ```
 
-The `mechanism` field records the kernel enforcement layer that detected the
-denial. Per-denial `Filesystem` and `Network` traps are always `seccomp`,
-because the user-notification broker is the only layer with a per-denial
-callback; Landlock enforces in-kernel without one. The `landlock` value
-appears only as a `mechanism` detail in an `Internal` trap when Landlock
-ruleset setup fails.
-
-This stream is separate from the sandboxed tool's output. If the option is
-omitted, landstrip is quiet unless it has to report a policy, launch, or
-platform error. These long-lived error messages remain on standard error
-and are not duplicated in the trap stream.
-
-Trap responses are informational. The configured sandbox policy always
-applies. However, writing trap responses requires an already-open file
-descriptor and a readable file path. If the sandbox blocks writing to the
-descriptor, or if writing fails, the denial is quietly dropped and the
-policy remains in effect. On backends without per-denial callbacks the
-option is best-effort.
-
-The descriptor must be 3 or greater (standard I/O descriptors 0-2 are
-reserved).
+Traps are informational; the configured policy always applies. landstrip is
+otherwise quiet on success — standard error belongs to landstrip, standard
+output to the sandboxed tool. Usage, policy, launch, and platform errors are
+printed as plain text; usage errors exit with status 2. Writing to `--trap-fd`
+is best-effort: it needs an already-open descriptor (3 or greater; 0-2 are
+reserved), and if the write fails the denial is dropped while the policy stays
+in effect.
 
 ## Development
 

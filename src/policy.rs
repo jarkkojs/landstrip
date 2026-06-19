@@ -13,18 +13,17 @@
 //! while lowering the policy.
 
 use crate::config::{SandboxFilesystem, SandboxNetwork, SandboxWindows};
-use crate::paths::normalize_path_lexically;
-#[cfg(target_os = "macos")]
-use crate::paths::normalize_roots_lexically;
 #[cfg(not(target_os = "macos"))]
-use crate::paths::{normalize_path, normalize_roots};
-use crate::trap::{Result, Trap};
+use crate::paths::normalize_path;
+use crate::paths::{normalize_path_lexically, normalize_roots};
 use crate::traversal::subtract_denied_roots;
+use anyhow::Result;
 use rayon::prelude::*;
 use std::env;
-use std::fmt;
 use std::fs;
 use std::io;
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -76,6 +75,98 @@ impl AccessPolicy {
         } else {
             None
         }
+    }
+}
+
+/// A policy that cannot be resolved or is unsupported on the current platform.
+///
+/// `Display` renders a stable `SCREAMING_SNAKE_CASE` code so callers can route
+/// on the specific rejection.
+#[derive(Debug, strum_macros::Display)]
+#[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
+#[allow(dead_code)]
+pub(crate) enum AccessPolicyError {
+    PartialRead,
+    UnrestrictedRead,
+    TcpPolicy,
+    UnixSocketPolicy,
+    UnixSocketPath,
+    DenyWriteSymlinkAncestor,
+    InvalidPort,
+    EmptyPath,
+    HomeUnavailable,
+    TraversalDepth,
+}
+
+impl std::error::Error for AccessPolicyError {}
+
+#[cfg(target_os = "macos")]
+impl AccessPolicy {
+    /// Reject policies macOS Seatbelt cannot enforce: partial read allowlists, a
+    /// non-socket `allowUnixSockets` path, or a `denyWrite` symlink ancestor.
+    pub(crate) fn validate(&self) -> std::result::Result<(), AccessPolicyError> {
+        if let ReadAccess::AllowRoots(roots) = &self.read_access {
+            if !roots.iter().any(|root| root == Path::new("/")) {
+                return Err(AccessPolicyError::PartialRead);
+            }
+        }
+
+        if let UnixSocketAccess::AllowPaths(paths) = &self.network_access.unix_socket_access {
+            for path in paths {
+                match fs::symlink_metadata(path) {
+                    Ok(metadata) if metadata.file_type().is_socket() => {}
+                    _ => return Err(AccessPolicyError::UnixSocketPath),
+                }
+            }
+        }
+
+        let has_writable_symlink_ancestor = self.write_denied_links.iter().any(|link| {
+            self.write_roots
+                .iter()
+                .any(|root| link == root || link.starts_with(root))
+        });
+        if has_writable_symlink_ancestor {
+            return Err(AccessPolicyError::DenyWriteSymlinkAncestor);
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl AccessPolicy {
+    /// Reject policies the Windows `AppContainer` cannot enforce: unrestricted
+    /// read, per-host/port TCP rules, or a non-empty Unix socket allowlist.
+    pub(crate) fn validate(&self) -> std::result::Result<(), AccessPolicyError> {
+        if matches!(self.read_access, ReadAccess::Unrestricted) {
+            return Err(AccessPolicyError::UnrestrictedRead);
+        }
+
+        let network = &self.network_access;
+        if network.is_unrestricted() {
+            return Ok(());
+        }
+
+        if network.local_tcp_bind || !network.connect_tcp_ports.is_empty() {
+            return Err(AccessPolicyError::TcpPolicy);
+        }
+
+        if !matches!(&network.unix_socket_access, UnixSocketAccess::AllowPaths(paths) if paths.is_empty())
+        {
+            return Err(AccessPolicyError::UnixSocketPolicy);
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+impl AccessPolicy {
+    /// The Linux broker enforces every supported policy shape, so nothing is
+    /// rejected ahead of time.
+    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+    pub(crate) fn validate(&self) -> std::result::Result<(), AccessPolicyError> {
+        Ok(())
     }
 }
 
@@ -167,11 +258,11 @@ pub(crate) fn resolve_policy(
                 read_roots.extend(subtract_denied_roots(vec![allow.clone()], &nested)?);
             }
         }
-        normalize_policy_roots(&mut read_roots);
+        normalize_roots(&mut read_roots);
         ReadAccess::AllowRoots(read_roots)
     };
 
-    Ok(AccessPolicy {
+    let policy = AccessPolicy {
         write_roots: write_allow,
         write_denied_roots: write_deny,
         write_denied_links,
@@ -179,7 +270,9 @@ pub(crate) fn resolve_policy(
         read_denied_roots: read_deny,
         network_access: lower_network_policy(network, &policy_base, home)?,
         windows: lower_windows_policy(windows),
-    })
+    };
+    policy.validate()?;
+    Ok(policy)
 }
 
 fn lower_windows_policy(windows: &SandboxWindows) -> WindowsPolicy {
@@ -215,16 +308,8 @@ fn lower_network_policy(
     }
 
     let mut connect_tcp_ports = Vec::new();
-    push_proxy_port(
-        &mut connect_tcp_ports,
-        network.http_proxy_port,
-        PolicyPort::HttpProxyPolicy,
-    )?;
-    push_proxy_port(
-        &mut connect_tcp_ports,
-        network.socks_proxy_port,
-        PolicyPort::SocksProxyPolicy,
-    )?;
+    push_proxy_port(&mut connect_tcp_ports, network.http_proxy_port)?;
+    push_proxy_port(&mut connect_tcp_ports, network.socks_proxy_port)?;
     connect_tcp_ports.sort_unstable();
     connect_tcp_ports.dedup();
 
@@ -244,28 +329,13 @@ fn lower_network_policy(
     })
 }
 
-#[derive(Clone, Copy, Debug)]
-enum PolicyPort {
-    HttpProxyPolicy,
-    SocksProxyPolicy,
-}
-
-impl fmt::Display for PolicyPort {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::HttpProxyPolicy => f.write_str("http_proxy_port"),
-            Self::SocksProxyPolicy => f.write_str("socks_proxy_port"),
-        }
-    }
-}
-
-fn push_proxy_port(ports: &mut Vec<u16>, port: Option<u16>, port_name: PolicyPort) -> Result<()> {
+fn push_proxy_port(ports: &mut Vec<u16>, port: Option<u16>) -> Result<()> {
     let Some(port) = port else {
         return Ok(());
     };
 
     if port == 0 {
-        return Err(Trap::internal().with_detail("port", port_name.to_string()));
+        return Err(AccessPolicyError::InvalidPort.into());
     }
 
     ports.push(port);
@@ -281,29 +351,23 @@ fn resolve_paths(
         .par_iter()
         .map(|path| {
             let path = resolve_sandbox_path(path, policy_base, home)?;
-            if path
-                .to_string_lossy()
-                .bytes()
-                .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b']'))
-            {
-                let matches = expand_glob_path(&path)?;
-                let mut resolved = Vec::new();
-                for path in matches {
-                    push_path_variants(&mut resolved, &path);
-                }
-                Ok(resolved)
+            let candidates = if path.to_string_lossy().bytes().any(is_glob_byte) {
+                expand_glob_path(&path)?
             } else {
-                let mut resolved = Vec::new();
-                push_path_variants(&mut resolved, &path);
-                Ok(resolved)
+                vec![path]
+            };
+            let mut resolved = Vec::new();
+            for candidate in &candidates {
+                push_path_variants(&mut resolved, candidate);
             }
+            Ok(resolved)
         })
         .collect::<Result<Vec<_>>>()?
         .into_iter()
         .flatten()
         .collect();
 
-    normalize_policy_roots(&mut resolved);
+    normalize_roots(&mut resolved);
 
     Ok(resolved)
 }
@@ -345,28 +409,20 @@ fn push_path_variants(paths: &mut Vec<PathBuf>, path: &Path) {
     paths.push(normalize_path(path));
 }
 
-#[cfg(target_os = "macos")]
-fn normalize_policy_roots(paths: &mut Vec<PathBuf>) {
-    normalize_roots_lexically(paths);
-}
-
-#[cfg(not(target_os = "macos"))]
-fn normalize_policy_roots(paths: &mut Vec<PathBuf>) {
-    normalize_roots(paths);
-}
 fn resolve_sandbox_path(path: &str, base: &Path, home: Option<&Path>) -> Result<PathBuf> {
     if path.is_empty() {
-        return Err(Trap::internal());
+        return Err(AccessPolicyError::EmptyPath.into());
     }
 
     let raw = Path::new(path);
     let resolved = if raw.has_root() {
         raw.to_path_buf()
     } else if path == "~" {
-        home.map(Path::to_path_buf).ok_or_else(Trap::internal)?
+        home.map(Path::to_path_buf)
+            .ok_or(AccessPolicyError::HomeUnavailable)?
     } else if let Some(rest) = path.strip_prefix("~/") {
         home.map(|home| home.join(rest))
-            .ok_or_else(Trap::internal)?
+            .ok_or(AccessPolicyError::HomeUnavailable)?
     } else {
         base.join(raw)
     };
@@ -390,11 +446,12 @@ fn expand_glob_path(pattern: &Path) -> Result<Vec<PathBuf>> {
     Ok(matches)
 }
 
+fn is_glob_byte(byte: u8) -> bool {
+    matches!(byte, b'*' | b'?' | b'[' | b']')
+}
+
 fn glob_base(pattern: &str) -> PathBuf {
-    let Some(glob_at) = pattern
-        .bytes()
-        .position(|byte| matches!(byte, b'*' | b'?' | b'[' | b']'))
-    else {
+    let Some(glob_at) = pattern.bytes().position(is_glob_byte) else {
         return PathBuf::from(pattern);
     };
     let prefix = &pattern[..glob_at];

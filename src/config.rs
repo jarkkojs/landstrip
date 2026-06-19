@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Jarkko Sakkinen
 
 use crate::cli::PolicyFormat;
-use crate::trap::{Result, Trap};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 use std::error::Error as StdError;
@@ -63,22 +63,22 @@ pub(crate) fn load_settings(policy_paths: &[PathBuf], format: PolicyFormat) -> R
         let mut document = String::new();
         io::stdin()
             .read_to_string(&mut document)
-            .map_err(Trap::policy_stdin_source)?;
-        let value = parse_policy_document(&document, format).map_err(Trap::policy_stdin_source)?;
+            .context("policy stdin")?;
+        let value = parse_policy_document(&document, format).context("policy stdin")?;
         merge_json(&mut merged, value);
-        serde_json::from_value(merged).map_err(Trap::policy_stdin_source)
+        serde_json::from_value(merged).context("policy stdin")
     } else {
         for path in policy_paths {
             log::debug!("config: {}", path.display());
 
             let document = fs::read_to_string(path)
-                .map_err(|source| Trap::policy_file_source(path, source))?;
+                .with_context(|| format!("policy file {}", path.display()))?;
             let value = parse_policy_document(&document, format)
-                .map_err(|source| Trap::policy_file_source(path, source))?;
+                .with_context(|| format!("policy file {}", path.display()))?;
             merge_json(&mut merged, value);
         }
         serde_json::from_value(merged)
-            .map_err(|source| Trap::policy_file_source(&policy_paths[0], source))
+            .with_context(|| format!("policy file {}", policy_paths[0].display()))
     }
 }
 
@@ -107,14 +107,7 @@ impl fmt::Display for PolicyDocumentError {
     }
 }
 
-impl StdError for PolicyDocumentError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Self::Json(error) => Some(error),
-            Self::Yaml(error) => Some(error),
-        }
-    }
-}
+impl StdError for PolicyDocumentError {}
 
 fn deserialize_paths<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
 where

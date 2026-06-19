@@ -1,0 +1,128 @@
+# Data-driven sandbox integration cases. See tests/data.rs for the field syntax.
+#
+# Each line is `key=value` fields joined by ` | `. Placeholders %TMP% (per-case
+# temp dir), %HOME%, %REPO%, %SHELL% (system shell / staged cmd.exe), %NC%, and
+# %PID% are expanded. Every case starts with empty allowed/ and denied/ dirs.
+# os= gates a line to a platform set; lines without os= run everywhere.
+
+# --- error channels stay plain stderr, never the trap fd ---
+
+name=usage error is plain stderr only | os=linux,macos | trap=true | status=2 | out=Usage: | out!="kind":"usage" | out!=USAGE_ERROR | trapfd_empty
+name=launch error is plain stderr only | os=linux,macos | policy={"network":{"allowNetwork":true},"filesystem":{"denyRead":["/"],"allowRead":["/"]}} | trap=true | cmd=%TMP%/no-such-tool-%PID% | status=!0 | out!="kind":"launch" | out!=LAUNCH_FAILED | trapfd_empty
+name=internal error is plain stderr only | os=linux,macos | policy={bad | trap=true | cmd=%SHELL% -c 'printf ok' | status=!0 | out!="kind":"internal" | out!=INTERNAL_ERROR | trapfd_empty
+
+# --- basic read/write policy ---
+
+name=unrestricted read policy runs tool | os=linux,macos | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed"]}} | cmd=%SHELL% -c 'printf ok' | status=0
+name=sysctl read permits uname | os=linux,macos | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed"]}} | cmd=%SHELL% -c 'uname -s' | status=0
+name=allowWrite permits configured root | os=linux,macos | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ %TMP%/allowed | status=0
+name=allowWrite denies other root | os=linux,macos | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c ': > "$1/nope.txt"' _ %TMP%/denied | status=!0
+name=allowWrite permits path with parentheses | os=macos | setup=mkdir:allowed (paren) | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed (paren)"]}} | cmd=%SHELL% -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ '%TMP%/allowed (paren)' | status=0
+
+# --- /dev/null and inherited descriptors ---
+
+name=dev null read and write are permitted | os=linux,macos | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["/dev/null"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c 'cat /dev/null >/dev/null' | status=0
+name=inherited fd cannot bypass write policy | os=macos | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["/dev/null"],"denyRead":["/"],"allowRead":["/"]}} | fd3=denied/preopened.txt | cmd=%SHELL% -c 'if test -e /dev/fd/3; then echo fd3-inherited >&2; fi; echo bypass >&3' | status=!0 | out!=fd3-inherited | trapfd_empty
+name=denyRead root blocks directory listing | os=macos | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["/dev/null"],"denyRead":["/"]}} | cmd=/bin/ls / | status=!0
+
+# --- structured denial reporting ---
+
+name=successful write denial is reported (linux) | os=linux | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c 'cat /dev/null >/dev/null; true' | status=0 | out="kind":"filesystem" | out="write" | out=/dev/null
+name=successful write denial is reported (macos) | os=macos | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c 'cat /dev/null >/dev/null; true' | status=0 | out=Operation not permitted | out=/dev/null
+name=trap fd reports write denial | os=linux | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed"],"denyRead":["/"],"allowRead":["/"]}} | trap=true | cmd=%SHELL% -c 'if test -e /proc/self/fd/3; then echo fd3-inherited >&2; fi; : > "$1"; exit 1' _ %TMP%/denied/trap-fd.txt | status=!0 | out!=fd3-inherited | trapfd="kind":"filesystem" | trapfd="write" | trapfd="seccomp" | trapfd="code":"FILESYSTEM_DENIED" | trapfd="syscall":"openat" | trapfd="errno":"EACCES" | trapfd=O_CREAT | trapfd=requested_path | trapfd="reason":"allow_miss" | trapfd="suggested_grant":{"allowWrite" | trapfd="process":{"pid" | trapfd=denied/trap-fd.txt
+
+# --- yaml policy parsing ---
+
+name=yaml line policy permits configured root | os=linux,macos | format=yaml | policy=network:\n  allowNetwork: true\nfilesystem:\n  allowWrite: |\n    %TMP%/allowed\n  denyRead: |\n    /\n  allowRead: |\n    /\n | cmd=%SHELL% -c ': > "$1/yaml-ok.txt"; test -f "$1/yaml-ok.txt"' _ %TMP%/allowed | status=0
+name=yaml line policy denies other root | os=linux,macos | format=yaml | policy=network:\n  allowNetwork: true\nfilesystem:\n  allowWrite: |\n    %TMP%/allowed\n  denyRead: |\n    /\n  allowRead: |\n    /\n | cmd=%SHELL% -c ': > "$1/yaml-nope.txt"' _ %TMP%/denied | status=!0
+name=stdin yaml policy runs tool | os=linux,macos | format=yaml | stdin_policy=true | policy=network:\n  allowNetwork: true\nfilesystem:\n  denyRead: |\n    /\n  allowRead: |\n    /\n | cmd=%SHELL% -c 'printf ok' | status=0
+
+# --- TCP listeners ---
+
+name=default network denies TCP listener | os=linux,macos | policy={"filesystem":{"denyRead":["/"],"allowRead":["/"]}} | net=listener-denied
+name=allowLocalBinding permits localhost listener | os=linux,macos | policy={"network":{"allowLocalBinding":true},"filesystem":{"denyRead":["/"],"allowRead":["/"]}} | net=listener-allowed
+name=allowNetwork permits localhost listener | os=linux,macos | policy={"network":{"allowNetwork":true},"filesystem":{"denyRead":["/"],"allowRead":["/"]}} | net=listener-allowed
+
+# --- unix domain sockets (macOS) ---
+
+name=allowUnixSockets permits exact socket path | os=macos | setup=mkdir:unix-sockets | policy={"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%TMP%/unix-sockets/allowed.sock"]}} | net=unix-allowed | unixsock=unix-sockets/allowed.sock
+name=allowUnixSockets rejects symlink path | os=macos | setup=mkdir:unix-sockets;symlink:allowed.sock:unix-sockets/socket-link | policy={"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%TMP%/unix-sockets/socket-link"]}} | cmd=%SHELL% -c 'printf ok' | status=!0
+name=allowUnixSockets rejects directory path | os=macos | setup=mkdir:unix-sockets | policy={"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%TMP%/unix-sockets"]}} | cmd=%SHELL% -c 'printf ok' | status=!0
+name=allowUnixSockets rejects regular file path | os=macos | setup=mkdir:unix-sockets;write:unix-sockets/not-a-socket: | policy={"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%TMP%/unix-sockets/not-a-socket"]}} | cmd=%SHELL% -c 'printf ok' | status=!0
+name=allowUnixSockets rejects missing path | os=macos | setup=mkdir:unix-sockets | policy={"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%TMP%/unix-sockets/missing.sock"]}} | cmd=%SHELL% -c 'printf ok' | status=!0
+
+# --- TCP connect denial (Linux) ---
+
+name=denied TCP connect is reported | os=linux | policy={"network":{"httpProxyPort":1},"filesystem":{"denyRead":["/home"],"allowRead":["/usr","/lib","/lib64","/bin","/sbin","/etc"]}} | net=connect-denied
+
+# --- policy validation ---
+
+name=empty path is rejected | os=linux,macos | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":[""]}} | cmd=%SHELL% -c 'printf ok' | status=!0
+name=httpProxyPort zero is rejected | os=linux,macos | policy={"network":{"httpProxyPort":0},"filesystem":{"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c 'printf ok' | status=!0
+name=socksProxyPort zero is rejected | os=linux,macos | policy={"network":{"socksProxyPort":0},"filesystem":{"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c 'printf ok' | status=!0
+name=malformed JSON policy is rejected | os=linux,macos | policy={bad | cmd=%SHELL% -c 'printf ok' | status=!0
+
+# --- denyWrite subtrees ---
+
+name=denyWrite permits sibling write | os=linux,macos | setup=mkdir:allowed/keep;mkdir:allowed/sub;write:allowed/sub/keep-me: | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed"],"denyWrite":["%TMP%/allowed/sub"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ %TMP%/allowed/keep | status=0
+name=denyWrite denies subtree write | os=linux,macos | setup=mkdir:allowed/sub | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed"],"denyWrite":["%TMP%/allowed/sub"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c ': > "$1/nope.txt"' _ %TMP%/allowed/sub | status=!0
+name=denyWrite permits new entry beside denied path | os=linux,macos | setup=mkdir:allowed/sub | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed"],"denyWrite":["%TMP%/allowed/sub"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c ': > "$1/fresh.txt"; test -f "$1/fresh.txt"' _ %TMP%/allowed | status=0
+name=denyWrite denies rename into denied subtree | os=linux | setup=mkdir:allowed/sub | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed"],"denyWrite":["%TMP%/allowed/sub"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c ': > "$1/mv-src.txt"; mv "$1/mv-src.txt" "$2/moved.txt"' _ %TMP%/allowed %TMP%/allowed/sub | status=!0
+name=denyWrite denies symlink into denied subtree | os=linux | setup=mkdir:allowed/sub | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed"],"denyWrite":["%TMP%/allowed/sub"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c 'ln -s /etc/hostname "$1/link"' _ %TMP%/allowed/sub | status=!0
+name=denyWrite denies unlink in denied subtree | os=linux | setup=mkdir:allowed/sub;write:allowed/sub/keep-me: | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed"],"denyWrite":["%TMP%/allowed/sub"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c 'rm -f "$1/keep-me"' _ %TMP%/allowed/sub | status=!0
+
+# --- denyRead policy setup tolerance (Linux) ---
+
+name=denyRead spine through unreadable dir does not abort setup | os=linux | setup=mkdir:unreadable/sub;write:unreadable/sub/secret:;chmod:unreadable/sub:000 | policy={"filesystem":{"allowWrite":["/dev/null"],"denyRead":["%TMP%/unreadable/sub/secret"]}} | cmd=%SHELL% -c 'printf ok' | status=0
+name=denyWrite glob over unreadable subtree does not abort setup | os=linux | setup=mkdir:globwalk/locked;write:globwalk/locked/data:;chmod:globwalk/locked:000 | policy={"filesystem":{"allowWrite":["%TMP%/globwalk","/dev/null"],"denyWrite":["%TMP%/globwalk/**/.env"]}} | cmd=%SHELL% -c 'printf ok' | status=0
+
+# --- denyRead vs stat and overlap precedence (Linux) ---
+
+name=stat of a denyRead path is permitted | os=linux | setup=mkdir:secret;write:secret/file:topsecret\n | policy={"filesystem":{"denyRead":["%TMP%/secret"],"allowWrite":["/dev/null"]}} | cmd=%SHELL% -c 'test -e "$1"' _ %TMP%/secret/file | status=0
+name=reading a denyRead file is still blocked | os=linux | setup=mkdir:secret;write:secret/file:topsecret\n | policy={"filesystem":{"denyRead":["%TMP%/secret"],"allowWrite":["/dev/null"]}} | cmd=%SHELL% -c 'cat "$1"' _ %TMP%/secret/file | status=!0
+name=allowRead carves a file back out of denyRead | os=linux | setup=mkdir:vault;write:vault/ok:public\n;write:vault/hidden:private\n | policy={"filesystem":{"denyRead":["%TMP%/vault"],"allowRead":["%TMP%/vault/ok"],"allowWrite":["/dev/null"]}} | cmd=%SHELL% -c 'cat "$1"' _ %TMP%/vault/ok | status=0
+name=denyRead blocks the rest of the carved directory | os=linux | setup=mkdir:vault;write:vault/ok:public\n;write:vault/hidden:private\n | policy={"filesystem":{"denyRead":["%TMP%/vault"],"allowRead":["%TMP%/vault/ok"],"allowWrite":["/dev/null"]}} | cmd=%SHELL% -c 'cat "$1"' _ %TMP%/vault/hidden | status=!0
+name=broad allowRead permits a file beside a nested denyRead | os=linux | setup=mkdir:proj/sub;write:proj/sub/main:code\n;write:proj/sub/.env:token\n | policy={"filesystem":{"denyRead":["%TMP%/proj/sub/.env"],"allowRead":["%TMP%/proj"],"allowWrite":["/dev/null"]}} | cmd=%SHELL% -c 'cat "$1"' _ %TMP%/proj/sub/main | status=0
+name=nested denyRead wins over a broader allowRead | os=linux | setup=mkdir:proj/sub;write:proj/sub/main:code\n;write:proj/sub/.env:token\n | policy={"filesystem":{"denyRead":["%TMP%/proj/sub/.env"],"allowRead":["%TMP%/proj"],"allowWrite":["/dev/null"]}} | cmd=%SHELL% -c 'cat "$1"' _ %TMP%/proj/sub/.env | status=!0
+
+# --- symlink ancestor protection ---
+
+name=denyWrite rejects writable symlink ancestor | os=macos | setup=mkdir:symlink-root/decoy;write:symlink-root/decoy/secret:;symlink:decoy:symlink-root/link | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/symlink-root"],"denyWrite":["%TMP%/symlink-root/link/secret"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c 'printf ok' | status=!0
+name=denyWrite blocks removing a symlink ancestor | os=linux | setup=mkdir:symlink-root/decoy;write:symlink-root/decoy/secret:;symlink:decoy:symlink-root/link | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/symlink-root"],"denyWrite":["%TMP%/symlink-root/link/secret"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c 'rm "$1/link"' _ %TMP%/symlink-root | status=!0
+name=denyWrite blocks symlink-swap replacement attack | os=linux | setup=mkdir:symlink-root/decoy;write:symlink-root/decoy/secret:;symlink:decoy:symlink-root/link | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/symlink-root"],"denyWrite":["%TMP%/symlink-root/link/secret"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c 'rm "$1/link" && mkdir "$1/link" && echo evil > "$1/link/secret"' _ %TMP%/symlink-root | status=!0
+name=denyWrite permits unrelated write under symlink root | os=linux | setup=mkdir:symlink-root/decoy;write:symlink-root/decoy/secret:;symlink:decoy:symlink-root/link | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/symlink-root"],"denyWrite":["%TMP%/symlink-root/link/secret"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ %TMP%/symlink-root | status=0
+
+# --- glob write roots ---
+
+name=glob permits write in matched dir | os=linux,macos | setup=mkdir:globdir/match1;mkdir:globdir/match2 | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/globdir/*"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ %TMP%/globdir/match1 | status=0
+name=glob denies write in unmatched dir | os=linux,macos | setup=mkdir:globdir/match1;mkdir:globdir/match2 | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/globdir/*"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c ': > "$1/nope.txt"' _ %TMP%/globdir | status=!0
+
+# --- home tilde expansion ---
+
+name=home tilde permits configured root | os=linux,macos | setup=homedir:landstrip-test-%PID% | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["~/landstrip-test-%PID%"]}} | cmd=%SHELL% -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ %HOME%/landstrip-test-%PID% | status=0
+
+# --- allowRead roots ---
+
+name=partial allowRead policy is rejected | os=macos | setup=mkdir:read-ok;write:read-ok/data.txt:ok\n | policy={"network":{"allowNetwork":true},"filesystem":{"denyRead":["/"],"allowRead":["%TMP%/read-ok","/usr","/lib","/lib64","/bin","/sbin","/etc"]}} | cmd=/bin/cat %TMP%/read-ok/data.txt | status=!0
+name=allowRead permits read in allowed path | os=linux | setup=mkdir:read-ok;write:read-ok/data.txt:ok\n | policy={"network":{"allowNetwork":true},"filesystem":{"denyRead":["/"],"allowRead":["%TMP%/read-ok","/usr","/lib","/lib64","/bin","/sbin","/etc"]}} | cwd=read-ok | cmd=%SHELL% -c 'cat "$1/data.txt"' _ %TMP%/read-ok | status=0
+name=allowRead denies other root | os=linux | setup=mkdir:read-ok;mkdir:read-no;write:read-ok/data.txt:ok\n;write:read-no/data.txt:no\n | policy={"network":{"allowNetwork":true},"filesystem":{"denyRead":["/"],"allowRead":["%TMP%/read-ok","/usr","/lib","/lib64","/bin","/sbin","/etc"]}} | cwd=read-ok | cmd=%SHELL% -c 'cat "$1/data.txt"' _ %TMP%/read-no | status=!0 | out="kind":"filesystem" | out=read-no/data.txt
+
+# --- nonfatal denials stay hidden on success ---
+
+name=denyRead without root allow is rejected | os=macos | policy={"network":{"allowNetwork":true},"filesystem":{"denyRead":["%TMP%/probe-denied"]}} | cmd=%SHELL% -c 'printf ok' | status=!0
+name=successful PATH probe hides nonfatal denials | os=linux | setup=mkdir:probe-denied/bin | policy={"network":{"allowNetwork":true},"filesystem":{"denyRead":["%TMP%/probe-denied"]}} | cmd=%SHELL% -c 'PATH="$1/probe-denied/bin:/bin:/usr/bin" ls /bin/sh' _ %TMP% | status=0 | out!="kind":"filesystem"
+name=missing denied read returns absent | os=linux | policy={"network":{"allowNetwork":true},"filesystem":{"denyRead":["/home"],"allowRead":["/usr","/lib","/lib64","/bin","/sbin","/etc"]}} | cmd=%SHELL% -c 'test ! -e "/home/landstrip-missing-%PID%"' | status=0 | out!="kind":"filesystem"
+
+# --- merged policy files and launch failures ---
+
+name=multiple policy files merge | os=linux,macos | policy={"filesystem":{"allowWrite":["%TMP%/allowed"],"denyRead":["/"],"allowRead":["/"]}} | policy={"network":{"allowNetwork":true}} | cmd=%SHELL% -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ %TMP%/allowed | status=0
+name=tool not found is rejected | os=linux,macos | policy={"network":{"allowNetwork":true},"filesystem":{"denyRead":["/"],"allowRead":["/"]}} | cmd=%TMP%/no-such-tool-%PID% | status=!0
+name=empty stdin policy is rejected | os=linux,macos | stdin_policy=true | policy= | cmd=%SHELL% -c 'exit 0' | status=!0
+
+# --- Windows (AppContainer) ---
+
+name=explicit read/write policy permits configured root | os=windows | policy={"filesystem":{"allowWrite":["%TMP%\\allowed"],"denyRead":["/"],"allowRead":["%TMP%","%REPO%"]}} | cmd=%SHELL% /C echo ok> %TMP%\allowed\ok.txt | status=0
+name=explicit read/write policy denies other root | os=windows | policy={"filesystem":{"allowWrite":["%TMP%\\allowed"],"denyRead":["/"],"allowRead":["%TMP%","%REPO%"]}} | cmd=%SHELL% /C echo nope> %TMP%\denied\nope.txt | status=!0
+name=unrestricted read policy is rejected | os=windows | policy={"filesystem":{"allowWrite":["%TMP%\\allowed"]}} | cmd=%SHELL% /C exit 0 | status=!0 | out=UNRESTRICTED_READ
+name=unrestricted network policy permits tool | os=windows | policy={"network":{"allowNetwork":true},"filesystem":{"denyRead":["/"],"allowRead":["%TMP%","%REPO%"]}} | cmd=%SHELL% /C exit 0 | status=0
+name=TCP local binding policy is rejected | os=windows | policy={"network":{"allowLocalBinding":true},"filesystem":{"denyRead":["/"],"allowRead":["%TMP%","%REPO%"]}} | cmd=%SHELL% /C exit 0 | status=!0 | out=TCP_POLICY

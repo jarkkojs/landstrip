@@ -7,9 +7,10 @@ pub(crate) mod fd;
 mod landlock;
 mod seccomp;
 
+use crate::error::Error;
 use crate::policy::AccessPolicy;
-use crate::trap::{Result, Trap};
 use crate::trap_fd::TrapFd;
+use anyhow::Result;
 use fd::close_inherited_fds;
 use landlock::{enforce_access_policy, landlock_features};
 use seccomp::NetworkFilter;
@@ -72,5 +73,5 @@ pub(crate) fn execute(
     }
     close_inherited_fds();
     let error = Command::new(tool).args(args).exec();
-    Err(Trap::tool_exec(Some(tool.to_os_string()), &error))
+    Err(Error::IoFailed(error).into())
 }

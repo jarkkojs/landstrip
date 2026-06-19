@@ -3,16 +3,17 @@
 
 //! macOS Seatbelt (SBPL) sandbox platform.
 
+use crate::error::Error;
 use crate::policy::{AccessPolicy, NetworkAccess, ReadAccess, UnixSocketAccess};
-use crate::trap::{Result, Trap};
 use crate::trap_fd::TrapFd;
+use anyhow::{Context, Result, anyhow};
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fmt::{self, Write};
 use std::fs;
+use std::io;
 use std::os::fd::RawFd;
-use std::os::unix::fs::FileTypeExt;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::ptr;
 
@@ -26,68 +27,12 @@ pub(crate) fn execute(
     args: &[OsString],
     trap_fd: &TrapFd,
 ) -> Result<()> {
-    reject_unsupported_policy(policy)?;
-    let profile = render_profile(policy).map_err(Trap::policy_stdin_source)?;
+    let profile = render_profile(policy).context("render sandbox profile")?;
     apply_profile(&profile)?;
     trap_fd.close();
     close_inherited_fds();
     let error = Command::new(tool).args(args).exec();
-    Err(Trap::tool_exec(Some(tool.to_os_string()), &error))
-}
-
-fn reject_unsupported_policy(policy: &AccessPolicy) -> Result<()> {
-    reject_unsupported_read_policy(policy)?;
-    reject_unsupported_unix_socket_policy(policy)?;
-    reject_unsupported_symlink_write_policy(policy)?;
-
-    Ok(())
-}
-
-fn reject_unsupported_read_policy(policy: &AccessPolicy) -> Result<()> {
-    let ReadAccess::AllowRoots(roots) = &policy.read_access else {
-        return Ok(());
-    };
-
-    if roots.iter().any(|root| root == Path::new("/")) {
-        return Ok(());
-    }
-
-    Err(Trap::internal().with_detail("feature", "partial read access"))
-}
-
-fn reject_unsupported_unix_socket_policy(policy: &AccessPolicy) -> Result<()> {
-    let UnixSocketAccess::AllowPaths(paths) = &policy.network_access.unix_socket_access else {
-        return Ok(());
-    };
-
-    for path in paths {
-        let Ok(metadata) = fs::symlink_metadata(path) else {
-            return Err(Trap::internal()
-                .with_detail("feature", "Unix socket path")
-                .with_detail("path", path.to_string_lossy()));
-        };
-        if !metadata.file_type().is_socket() {
-            return Err(Trap::internal()
-                .with_detail("feature", "Unix socket path")
-                .with_detail("path", path.to_string_lossy()));
-        }
-    }
-
-    Ok(())
-}
-
-fn reject_unsupported_symlink_write_policy(policy: &AccessPolicy) -> Result<()> {
-    let has_writable_symlink_ancestor = policy.write_denied_links.iter().any(|link| {
-        policy
-            .write_roots
-            .iter()
-            .any(|root| link == root || link.starts_with(root))
-    });
-    if has_writable_symlink_ancestor {
-        return Err(Trap::internal().with_detail("feature", "denyWrite symlink ancestor"));
-    }
-
-    Ok(())
+    Err(Error::IoFailed(error).into())
 }
 
 fn close_inherited_fds() {
@@ -136,10 +81,10 @@ fn close_fd(fd: RawFd) {
 
 fn apply_profile(profile: &str) -> Result<()> {
     let profile = CString::new(profile).map_err(|source| {
-        let nul_position = source.nul_position();
-        Trap::internal()
-            .with_detail("offset", nul_position.to_string())
-            .with_detail("mechanism", "sbpl")
+        anyhow!(
+            "SBPL profile contains interior NUL byte at offset {}",
+            source.nul_position()
+        )
     })?;
     let mut errorbuf = ptr::null_mut();
 
@@ -149,9 +94,7 @@ fn apply_profile(profile: &str) -> Result<()> {
     if rc == 0 {
         Ok(())
     } else {
-        Err(Trap::internal()
-            .with_detail("source", take_sandbox_error(errorbuf))
-            .with_detail("mechanism", "sbpl"))
+        Err(Error::IoFailed(io::Error::other(take_sandbox_error(errorbuf))).into())
     }
 }
 

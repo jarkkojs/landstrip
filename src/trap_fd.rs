@@ -1,38 +1,26 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
-//! Separate file descriptor or file path for landstrip trap response blocks.
+//! Separate file descriptor for landstrip trap response blocks.
 
+#[cfg(target_os = "linux")]
 use crate::trap::Trap;
-use std::fs::OpenOptions;
-use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TrapFd {
-    // A raw descriptor is a unix-only `--trap-fd` concept; other platforms use the file sink.
+    // A raw descriptor is a unix-only `--trap-fd` concept; other platforms ignore it.
     #[cfg_attr(not(unix), allow(dead_code))]
     fd: Option<i32>,
-    file: Option<PathBuf>,
 }
 
 impl TrapFd {
     pub(crate) fn from_fd(fd: Option<i32>) -> Self {
-        Self { fd, file: None }
-    }
-
-    pub(crate) fn from_file(path: PathBuf) -> Self {
-        Self {
-            fd: None,
-            file: Some(path),
-        }
+        Self { fd }
     }
 
     #[cfg(target_os = "linux")]
     pub(crate) fn is_enabled(&self) -> bool {
-        self.fd.is_some() || self.file.is_some()
+        self.fd.is_some()
     }
 
     #[cfg(target_os = "linux")]
@@ -54,25 +42,20 @@ impl TrapFd {
         self.fd
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn write(&self, trap: &Trap) {
         let Ok(line) = serde_json::to_string(trap) else {
             return;
         };
         let line = format!("{line}\n");
 
-        #[cfg(unix)]
         if let Some(fd) = self.fd {
             write_trap_fd(fd, line.as_bytes());
-            return;
-        }
-
-        if let Some(ref path) = self.file {
-            write_trap_file(path, line.as_bytes());
         }
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn write_trap_fd(fd: i32, line: &[u8]) {
     let mut remaining = line;
     while !remaining.is_empty() {
@@ -97,23 +80,6 @@ fn write_trap_fd(fd: i32, line: &[u8]) {
             return;
         };
         remaining = &remaining[written..];
-    }
-}
-
-fn write_trap_file(path: &PathBuf, line: &[u8]) {
-    let mut opts = OpenOptions::new();
-    opts.create(true).append(true);
-    #[cfg(unix)]
-    opts.mode(0o600);
-    match opts.open(path) {
-        Ok(mut file) => {
-            if let Err(error) = file.write_all(line) {
-                log::debug!("trap file write path={} err={error}", path.display());
-            }
-        }
-        Err(error) => {
-            log::debug!("trap file open path={} err={error}", path.display());
-        }
     }
 }
 

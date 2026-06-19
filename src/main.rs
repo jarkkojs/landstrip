@@ -6,6 +6,7 @@
 
 mod cli;
 mod config;
+mod error;
 mod paths;
 #[cfg_attr(target_os = "linux", path = "linux/mod.rs")]
 #[cfg_attr(target_os = "macos", path = "macos.rs")]
@@ -16,6 +17,7 @@ mod paths;
 )]
 mod platform;
 mod policy;
+#[cfg(target_os = "linux")]
 mod trap;
 mod trap_fd;
 mod traversal;
@@ -23,8 +25,8 @@ mod traversal;
 use crate::cli::{Cli, parse_cli};
 use crate::config::load_settings;
 use crate::policy::resolve_policy;
-use crate::trap::{Result, Trap};
 use crate::trap_fd::TrapFd;
+use anyhow::Result;
 use std::process;
 
 fn main() {
@@ -33,14 +35,10 @@ fn main() {
         process::exit(2);
     });
 
-    if let Err(trap) = run_with_cli(&cli) {
-        exit_with_trap(&trap);
+    if let Err(error) = run_with_cli(&cli) {
+        log::error!("{error:#}");
+        process::exit(1);
     }
-}
-
-fn exit_with_trap(trap: &Trap) -> ! {
-    trap.emit();
-    process::exit(1);
 }
 
 fn run_with_cli(cli: &Cli) -> Result<()> {
@@ -61,20 +59,7 @@ fn run_with_cli(cli: &Cli) -> Result<()> {
         &cwd,
     )?;
 
-    let trap_fd = if let Some(ref path) = cli.trap_file {
-        TrapFd::from_file(path.clone())
-    } else {
-        TrapFd::from_fd(cli.trap_fd)
-    };
+    let trap_fd = TrapFd::from_fd(cli.trap_fd);
 
-    let result = platform::execute(&policy, &cli.tool, &cli.tool_args, &trap_fd);
-
-    // The Linux broker streams traps live; the static-profile platforms only ever
-    // produce a terminal trap, so route it to the trap sink here.
-    #[cfg(not(target_os = "linux"))]
-    if let Err(ref trap) = result {
-        trap_fd.write(trap);
-    }
-
-    result
+    platform::execute(&policy, &cli.tool, &cli.tool_args, &trap_fd)
 }

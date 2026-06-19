@@ -3,12 +3,14 @@
 
 //! Windows sandbox platform using LPAC `AppContainer`.
 
-use crate::policy::{AccessPolicy, ReadAccess, UnixSocketAccess, WindowsPolicy};
-use crate::trap::{Result, Trap};
+use crate::error::Error as LandstripError;
+use crate::policy::{AccessPolicy, AccessPolicyError, ReadAccess, WindowsPolicy};
 use crate::trap_fd::TrapFd;
+use anyhow::{Error, Result, anyhow};
 use std::collections::hash_map::DefaultHasher;
 use std::ffi::{OsStr, OsString, c_void};
 use std::hash::{Hash, Hasher};
+use std::io;
 use std::iter;
 use std::mem;
 use std::os::windows::ffi::OsStrExt;
@@ -63,8 +65,6 @@ pub(crate) fn execute(
     args: &[OsString],
     _trap_fd: &TrapFd,
 ) -> Result<()> {
-    reject_unsupported_policy(policy)?;
-
     let moniker = appcontainer_moniker(tool, policy);
     let profile = AppContainerProfile::new(&moniker)?;
     let _grants = grant_policy_access(policy, profile.sid())?;
@@ -73,29 +73,6 @@ pub(crate) fn execute(
     let exit_code =
         create_process_in_appcontainer(profile.sid(), tool, args, grant_network, &policy.windows)?;
     std::process::exit(i32::from_ne_bytes(exit_code.to_ne_bytes()));
-}
-
-fn reject_unsupported_policy(policy: &AccessPolicy) -> Result<()> {
-    if matches!(policy.read_access, ReadAccess::Unrestricted) {
-        return Err(Trap::internal().with_detail("feature", "read access"));
-    }
-
-    let network = &policy.network_access;
-
-    if network.is_unrestricted() {
-        return Ok(());
-    }
-
-    if network.local_tcp_bind || !network.connect_tcp_ports.is_empty() {
-        return Err(Trap::internal().with_detail("feature", "TCP policies"));
-    }
-
-    if !matches!(&network.unix_socket_access, UnixSocketAccess::AllowPaths(paths) if paths.is_empty())
-    {
-        return Err(Trap::internal().with_detail("feature", "Unix socket policies"));
-    }
-
-    Ok(())
 }
 
 fn appcontainer_moniker(tool: &OsStr, policy: &AccessPolicy) -> String {
@@ -136,18 +113,12 @@ impl AppContainerProfile {
         }
 
         if hresult_value(hr) & 0xffff != ERROR_ALREADY_EXISTS {
-            let code = hresult_value(hr);
-            return Err(Trap::internal()
-                .with_detail("api", "CreateAppContainerProfile")
-                .with_detail("code", code.to_string()));
+            return Err(LandstripError::IoFailed(io::Error::from_raw_os_error(hr)).into());
         }
 
         let hr = unsafe { DeriveAppContainerSidFromAppContainerName(moniker.as_ptr(), &mut sid) };
         if hr != 0 {
-            let code = hresult_value(hr);
-            return Err(Trap::internal()
-                .with_detail("api", "DeriveAppContainerSidFromAppContainerName")
-                .with_detail("code", code.to_string()));
+            return Err(LandstripError::IoFailed(io::Error::from_raw_os_error(hr)).into());
         }
 
         Ok(Self { sid, moniker })
@@ -173,7 +144,7 @@ fn grant_policy_access(policy: &AccessPolicy, sid: PSID) -> Result<GrantedAccess
     let read_roots = match &policy.read_access {
         ReadAccess::AllowRoots(read_roots) => read_roots,
         ReadAccess::Unrestricted => {
-            return Err(Trap::internal().with_detail("feature", "read access"));
+            return Err(AccessPolicyError::UnrestrictedRead.into());
         }
     };
     let mut granted = GrantedAccess {
@@ -241,9 +212,12 @@ fn set_path_access(path: &Path, sid: PSID, access: u32, mode: ACCESS_MODE) -> Re
         )
     };
     if status != 0 {
-        return Err(Trap::internal()
-            .with_detail("api", "GetNamedSecurityInfoW")
-            .with_detail("code", status.to_string()));
+        return Err(
+            LandstripError::IoFailed(io::Error::from_raw_os_error(i32::from_ne_bytes(
+                status.to_ne_bytes(),
+            )))
+            .into(),
+        );
     }
 
     let explicit_access = EXPLICIT_ACCESS_W {
@@ -263,9 +237,12 @@ fn set_path_access(path: &Path, sid: PSID, access: u32, mode: ACCESS_MODE) -> Re
     let status = unsafe { SetEntriesInAclW(1, &explicit_access, old_dacl, &mut new_dacl) };
     if status != 0 {
         unsafe { LocalFree(security_descriptor) };
-        return Err(Trap::internal()
-            .with_detail("api", "SetEntriesInAclW")
-            .with_detail("code", status.to_string()));
+        return Err(
+            LandstripError::IoFailed(io::Error::from_raw_os_error(i32::from_ne_bytes(
+                status.to_ne_bytes(),
+            )))
+            .into(),
+        );
     }
 
     let status = unsafe {
@@ -286,9 +263,12 @@ fn set_path_access(path: &Path, sid: PSID, access: u32, mode: ACCESS_MODE) -> Re
     }
 
     if status != 0 {
-        return Err(Trap::internal()
-            .with_detail("api", "SetNamedSecurityInfoW")
-            .with_detail("code", status.to_string()));
+        return Err(
+            LandstripError::IoFailed(io::Error::from_raw_os_error(i32::from_ne_bytes(
+                status.to_ne_bytes(),
+            )))
+            .into(),
+        );
     }
 
     Ok(())
@@ -302,10 +282,7 @@ impl SandboxJob {
     fn new() -> Result<Self> {
         let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
         if handle.is_null() {
-            let code = unsafe { GetLastError() };
-            return Err(Trap::internal()
-                .with_detail("api", "CreateJobObjectW")
-                .with_detail("code", code.to_string()));
+            return Err(LandstripError::IoFailed(io::Error::last_os_error()).into());
         }
 
         let job = Self {
@@ -319,14 +296,11 @@ impl SandboxJob {
                 JobObjectExtendedLimitInformation,
                 (&raw const limits).cast(),
                 u32::try_from(mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
-                    .map_err(|_| Trap::internal())?,
+                    .map_err(|_| LandstripError::IntegerTooLarge)?,
             )
         };
         if ok == 0 {
-            let code = unsafe { GetLastError() };
-            return Err(Trap::internal()
-                .with_detail("api", "SetInformationJobObject")
-                .with_detail("code", code.to_string()));
+            return Err(LandstripError::IoFailed(io::Error::last_os_error()).into());
         }
 
         Ok(job)
@@ -347,8 +321,8 @@ fn create_process_in_appcontainer(
     let command_line = command_line(tool, args)?;
     let mut command_line = wide_string(&command_line);
     let mut startup_info = unsafe { mem::zeroed::<STARTUPINFOEXW>() };
-    startup_info.StartupInfo.cb =
-        u32::try_from(mem::size_of::<STARTUPINFOEXW>()).map_err(|_| Trap::internal())?;
+    startup_info.StartupInfo.cb = u32::try_from(mem::size_of::<STARTUPINFOEXW>())
+        .map_err(|_| LandstripError::IntegerTooLarge)?;
 
     let job = SandboxJob::new()?;
     let mut job_handle = job.as_raw();
@@ -409,31 +383,20 @@ fn create_process_in_appcontainer(
     };
 
     if created == 0 {
-        let code = unsafe { GetLastError() };
-        return Err(Trap::Launch {
-            code: "LAUNCH_FAILED",
-            program: tool.to_string_lossy().into_owned(),
-            message: format!("CreateProcessW failed: {code}"),
-        });
+        return Err(LandstripError::IoFailed(io::Error::last_os_error()).into());
     }
 
     let process = Handle(process_info.hProcess);
     let thread = Handle(process_info.hThread);
     let wait = unsafe { WaitForSingleObject(process.0, INFINITE) };
     if wait == WAIT_FAILED {
-        let code = unsafe { GetLastError() };
-        return Err(Trap::internal()
-            .with_detail("api", "WaitForSingleObject")
-            .with_detail("code", code.to_string()));
+        return Err(LandstripError::IoFailed(io::Error::last_os_error()).into());
     }
 
     let mut exit_code = 0;
     let ok = unsafe { GetExitCodeProcess(process.0, &mut exit_code) };
     if ok == 0 {
-        let code = unsafe { GetLastError() };
-        return Err(Trap::internal()
-            .with_detail("api", "GetExitCodeProcess")
-            .with_detail("code", code.to_string()));
+        return Err(LandstripError::IoFailed(io::Error::last_os_error()).into());
     }
 
     drop(thread);
@@ -459,10 +422,7 @@ fn update_attribute(
         )
     };
     if ok == 0 {
-        let code = unsafe { GetLastError() };
-        return Err(Trap::internal()
-            .with_detail("api", "UpdateProcThreadAttribute")
-            .with_detail("code", code.to_string()));
+        return Err(LandstripError::IoFailed(io::Error::last_os_error()).into());
     }
     Ok(())
 }
@@ -477,19 +437,14 @@ impl ProcThreadAttributeList {
         let ok = unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), count, 0, &mut size) };
         let code = unsafe { GetLastError() };
         if ok != 0 || code != ERROR_INSUFFICIENT_BUFFER {
-            return Err(Trap::internal()
-                .with_detail("api", "InitializeProcThreadAttributeList")
-                .with_detail("code", code.to_string()));
+            return Err(LandstripError::IoFailed(io::Error::last_os_error()).into());
         }
 
         let mut storage = vec![0_u8; size];
         let list = storage.as_mut_ptr().cast();
         let ok = unsafe { InitializeProcThreadAttributeList(list, count, 0, &mut size) };
         if ok == 0 {
-            let code = unsafe { GetLastError() };
-            return Err(Trap::internal()
-                .with_detail("api", "InitializeProcThreadAttributeList")
-                .with_detail("code", code.to_string()));
+            return Err(LandstripError::IoFailed(io::Error::last_os_error()).into());
         }
 
         Ok(Self { storage })
@@ -530,10 +485,7 @@ impl NetworkCapabilities {
                 CreateWellKnownSid(kind, ptr::null_mut(), sid.as_mut_ptr().cast(), &mut size)
             };
             if ok == 0 {
-                let code = unsafe { GetLastError() };
-                return Err(Trap::internal()
-                    .with_detail("api", "CreateWellKnownSid")
-                    .with_detail("code", code.to_string()));
+                return Err(LandstripError::IoFailed(io::Error::last_os_error()).into());
             }
             sids.push(sid);
         }
@@ -581,10 +533,11 @@ fn command_line(tool: &OsStr, args: &[OsString]) -> Result<String> {
     Ok(parts.join(" "))
 }
 
-fn tool_encoding_error(tool: &OsStr, message: &str) -> Trap {
-    Trap::internal()
-        .with_detail("program", tool.to_string_lossy())
-        .with_detail("source", message)
+fn tool_encoding_error(tool: &OsStr, message: &str) -> Error {
+    anyhow!(
+        "command line encoding failed for {}: {message}",
+        tool.to_string_lossy()
+    )
 }
 
 fn quote_command_arg(arg: &OsStr) -> std::result::Result<String, &'static str> {

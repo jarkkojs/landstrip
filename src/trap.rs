@@ -1,43 +1,28 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
+use crate::error::Error;
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::ffi::OsString;
-use std::fmt;
-use std::io;
-use std::path::{Path, PathBuf};
-
-pub(crate) type Result<T> = std::result::Result<T, Trap>;
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) enum TrapOperation {
     Read,
     Write,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, strum_macros::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub(crate) enum NetworkOperation {
     Connect,
     Bind,
 }
 
 impl NetworkOperation {
-    fn code(self) -> &'static str {
-        match self {
-            Self::Connect => "NET_CONNECT_DENIED",
-            Self::Bind => "NET_BIND_DENIED",
-        }
-    }
-
     fn syscall(self) -> &'static str {
-        match self {
-            Self::Connect => "connect",
-            Self::Bind => "bind",
-        }
+        self.into()
     }
 }
 
@@ -49,7 +34,7 @@ pub(crate) struct ProcessContext {
 }
 #[derive(Debug, Serialize)]
 pub(crate) struct FilesystemTrap {
-    pub(crate) code: &'static str,
+    pub(crate) code: Error,
     pub(crate) state: &'static str,
     pub(crate) query_id: u64,
     pub(crate) operation: TrapOperation,
@@ -64,9 +49,22 @@ pub(crate) struct FilesystemTrap {
     pub(crate) mechanism: &'static str,
 }
 
+/// A denied filesystem access, shared by the immediate query trap and the
+/// deferred denial record so both describe the event with the same fields.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct FilesystemDenial {
+    pub(crate) operation: TrapOperation,
+    pub(crate) path: PathBuf,
+    pub(crate) requested_path: PathBuf,
+    pub(crate) syscall: &'static str,
+    pub(crate) flags: Vec<&'static str>,
+    pub(crate) reason: &'static str,
+    pub(crate) process: ProcessContext,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct NetworkTrap {
-    pub(crate) code: &'static str,
+    pub(crate) code: Error,
     pub(crate) operation: &'static str,
     pub(crate) target: String,
     pub(crate) syscall: &'static str,
@@ -78,40 +76,13 @@ pub(crate) struct NetworkTrap {
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub(crate) enum Trap {
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Filesystem(Box<FilesystemTrap>),
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Network(Box<NetworkTrap>),
-    Launch {
-        code: &'static str,
-        program: String,
-        message: String,
-    },
-    Internal {
-        code: &'static str,
-        detail: BTreeMap<String, String>,
-    },
 }
 
 impl Trap {
-    pub(crate) fn internal() -> Self {
-        Self::Internal {
-            code: "INTERNAL_ERROR",
-            detail: BTreeMap::new(),
-        }
-    }
-
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub(crate) fn filesystem(
-        operation: TrapOperation,
-        path: PathBuf,
-        requested_path: PathBuf,
-        syscall: &'static str,
-        flags: Vec<&'static str>,
-        reason: &'static str,
-        process: ProcessContext,
-    ) -> Self {
-        Self::filesystem_trap(
+    pub(crate) fn filesystem(denial: FilesystemDenial, query_id: Option<u64>) -> Self {
+        let FilesystemDenial {
             operation,
             path,
             requested_path,
@@ -119,53 +90,7 @@ impl Trap {
             flags,
             reason,
             process,
-            "info",
-            0,
-        )
-    }
-
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn filesystem_query(
-        operation: TrapOperation,
-        path: PathBuf,
-        requested_path: PathBuf,
-        syscall: &'static str,
-        flags: Vec<&'static str>,
-        reason: &'static str,
-        process: ProcessContext,
-        query_id: u64,
-    ) -> Self {
-        Self::filesystem_trap(
-            operation,
-            path,
-            requested_path,
-            syscall,
-            flags,
-            reason,
-            process,
-            "query",
-            query_id,
-        )
-    }
-
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    #[allow(clippy::too_many_arguments)]
-    fn filesystem_trap(
-        operation: TrapOperation,
-        path: PathBuf,
-        requested_path: PathBuf,
-        syscall: &'static str,
-        flags: Vec<&'static str>,
-        reason: &'static str,
-        process: ProcessContext,
-        state: &'static str,
-        query_id: u64,
-    ) -> Self {
-        let code = match operation {
-            TrapOperation::Read => "FS_READ_DENIED",
-            TrapOperation::Write => "FS_WRITE_DENIED",
-        };
+        } = denial;
         let grant_key = match operation {
             TrapOperation::Read => "allowRead",
             TrapOperation::Write => "allowWrite",
@@ -173,9 +98,9 @@ impl Trap {
         let mut suggested_grant = BTreeMap::new();
         suggested_grant.insert(grant_key, path.clone());
         Self::Filesystem(Box::new(FilesystemTrap {
-            code,
-            state,
-            query_id,
+            code: Error::FilesystemDenied,
+            state: if query_id.is_some() { "query" } else { "info" },
+            query_id: query_id.unwrap_or(0),
             operation,
             path,
             requested_path,
@@ -189,71 +114,24 @@ impl Trap {
         }))
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn network(
         operation: NetworkOperation,
         target: String,
         process: ProcessContext,
     ) -> Self {
+        let syscall = operation.syscall();
         Self::Network(Box::new(NetworkTrap {
-            code: operation.code(),
-            operation: operation.syscall(),
+            code: Error::NetworkDenied,
+            operation: syscall,
             target,
-            syscall: operation.syscall(),
+            syscall,
             errno: "EACCES",
             mechanism: "seccomp",
             process,
         }))
     }
 
-    pub(crate) fn with_detail(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        if let Self::Internal { detail, .. } = &mut self {
-            detail.insert(key.into(), value.into());
-        }
-        self
-    }
-
     pub(crate) fn emit(&self) {
         eprintln!("{}", serde_json::to_string(self).unwrap_or_default());
-    }
-
-    #[cfg_attr(not(unix), allow(dead_code))]
-    pub(crate) fn tool_exec(program: Option<OsString>, error: &io::Error) -> Self {
-        let program = program
-            .map(|program| program.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        if error.kind() == io::ErrorKind::NotFound {
-            Self::Launch {
-                code: "LAUNCH_FAILED",
-                program,
-                message: error.to_string(),
-            }
-        } else {
-            Self::internal()
-                .with_detail("program", program)
-                .with_detail("source", error.to_string())
-        }
-    }
-
-    pub(crate) fn policy_stdin_source(source: impl fmt::Display) -> Self {
-        Self::internal().with_detail("source", source.to_string())
-    }
-
-    pub(crate) fn policy_file_source(path: &Path, source: impl fmt::Display) -> Self {
-        Self::internal()
-            .with_detail("file", path.to_string_lossy())
-            .with_detail("source", source.to_string())
-    }
-}
-
-impl fmt::Display for Trap {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&serde_json::to_string(self).unwrap_or_default())
-    }
-}
-
-impl From<io::Error> for Trap {
-    fn from(error: io::Error) -> Self {
-        Self::internal().with_detail("source", error.to_string())
     }
 }

@@ -13,10 +13,12 @@ version = "0.15.17"
 autotests = false
 
 [[test]]
-name = "runner"
-path = "tests/runner.rs"
+name = "data"
+path = "tests/data.rs"
+harness = false
 
 [dependencies]
+anyhow = "1.0"
 argh = "0.1.19"
 dirs = "6.0.0"
 env_logger = "0.11.10"
@@ -45,5 +47,3 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_WindowsProgramming",
 ] }
 
-[dev-dependencies]
-duct = "1.1.1"

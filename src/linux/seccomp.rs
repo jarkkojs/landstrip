@@ -14,10 +14,12 @@
 
 use super::fd::close_inherited_fds;
 use super::landlock::{LandlockFeatures, enforce_access_policy};
+use crate::error::Error as LandstripError;
 use crate::paths::{normalize_path, normalize_path_lexically};
 use crate::policy::{AccessPolicy, ReadAccess, UnixSocketAccess};
-use crate::trap::{NetworkOperation, ProcessContext, Result, Trap, TrapOperation};
+use crate::trap::{FilesystemDenial, NetworkOperation, ProcessContext, Trap, TrapOperation};
 use crate::trap_fd::TrapFd;
+use anyhow::{Result, anyhow};
 use nix::errno::Errno;
 use nix::fcntl::{FcntlArg, fcntl};
 use nix::poll::{PollFd, PollFlags, poll};
@@ -34,7 +36,7 @@ use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::ffi::{CString, OsStr, OsString};
 use std::fs;
-use std::io::{IoSlice, IoSliceMut};
+use std::io::{self, IoSlice, IoSliceMut};
 use std::mem;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
@@ -137,7 +139,8 @@ pub(super) fn run_broker(
         )?;
     }
 
-    let eafnosupport = u32::try_from(libc::EAFNOSUPPORT).map_err(|_| Trap::internal())?;
+    let eafnosupport =
+        u32::try_from(libc::EAFNOSUPPORT).map_err(|_| LandstripError::IntegerTooLarge)?;
     let errno = if errno_rules.is_empty() {
         None
     } else {
@@ -165,10 +168,10 @@ pub(super) fn run_broker(
     };
 
     let filters = NetworkFilters { errno, notify };
-    let (parent, child_sock) = UnixStream::pair()?;
+    let (parent, child_sock) = UnixStream::pair().map_err(LandstripError::IoFailed)?;
 
     // SAFETY: landstrip forks before spawning threads; the child either execs the tool or exits.
-    match unsafe { fork() }.map_err(|error| system_errno(error as i32))? {
+    match unsafe { fork() }.map_err(LandstripError::from)? {
         ForkResult::Child => {
             drop(parent);
 
@@ -182,7 +185,7 @@ pub(super) fn run_broker(
                     // SAFETY: notify is borrowed only for the duration of fcntl(2).
                     let notify_fd = unsafe { BorrowedFd::borrow_raw(notify.as_raw_fd()) };
                     let notify = fcntl(notify_fd, FcntlArg::F_DUPFD_CLOEXEC(0))
-                        .map_err(|error| system_errno(error as i32))?;
+                        .map_err(LandstripError::from)?;
                     // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
                     let notify = unsafe { OwnedFd::from_raw_fd(notify) };
 
@@ -194,11 +197,11 @@ pub(super) fn run_broker(
                 child_tool.args(args);
 
                 let error = child_tool.exec();
-                Err(Trap::tool_exec(Some(tool.to_os_string()), &error))
+                Err(LandstripError::IoFailed(error).into())
             })();
 
             if let Err(error) = result {
-                log::error!("landstrip child setup failed: {error}");
+                log::error!("landstrip child setup failed: {error:#}");
             }
 
             // SAFETY: _exit terminates the child without running duplicated parent cleanup.
@@ -270,7 +273,7 @@ fn supervise_child(
                 Ok(status) => return Ok(denials.emit(status)),
                 Err(Errno::EINTR) => continue,
                 Err(error) => {
-                    return Err(system_errno(error as i32));
+                    return Err(LandstripError::from(error).into());
                 }
             }
         }
@@ -291,7 +294,7 @@ fn supervise_child(
                 }
                 Err(Errno::EINTR) => continue,
                 Err(error) => {
-                    return Err(system_errno(error as i32));
+                    return Err(LandstripError::from(error).into());
                 }
             }
         };
@@ -306,7 +309,7 @@ fn supervise_child(
                     Ok(status) => return Ok(denials.emit(status)),
                     Err(Errno::EINTR) => continue,
                     Err(error) => {
-                        return Err(system_errno(error as i32));
+                        return Err(LandstripError::from(error).into());
                     }
                 }
             }
@@ -337,11 +340,11 @@ fn supervise_child(
                             Ok(status) => return Ok(denials.emit(status)),
                             Err(Errno::EINTR) => continue,
                             Err(error) => {
-                                return Err(system_errno(error as i32));
+                                return Err(LandstripError::from(error).into());
                             }
                         }
                     }
-                    return Err(Trap::policy_stdin_source(source));
+                    return Err(source);
                 }
             }
             HandleResult::Pending(query_id, grant) => {
@@ -353,39 +356,21 @@ fn supervise_child(
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum Denial {
-    Filesystem(
-        TrapOperation,
-        PathBuf,
-        PathBuf,
-        &'static str,
-        Vec<&'static str>,
-        &'static str,
-        ProcessContext,
-    ),
+    Filesystem(FilesystemDenial),
     Network(NetworkOperation, String, ProcessContext),
 }
 
 impl Denial {
     fn report_on_success(&self) -> bool {
         match self {
-            Self::Filesystem(operation, _, _, _, _, _, _) => *operation == TrapOperation::Write,
+            Self::Filesystem(denial) => denial.operation == TrapOperation::Write,
             Self::Network(_, _, _) => true,
         }
     }
 
     fn into_trap(self) -> Trap {
         match self {
-            Self::Filesystem(operation, path, requested_path, syscall, flags, reason, process) => {
-                Trap::filesystem(
-                    operation,
-                    path,
-                    requested_path,
-                    syscall,
-                    flags,
-                    reason,
-                    process,
-                )
-            }
+            Self::Filesystem(denial) => Trap::filesystem(denial, None),
             Self::Network(operation, target, process) => Trap::network(operation, target, process),
         }
     }
@@ -538,9 +523,7 @@ fn seccomp_probe(operation: libc::c_uint, data: *mut libc::c_void) -> Result<()>
     // SAFETY: seccomp(2) copies the operation-specific data pointer before returning.
     let rc = unsafe { libc::syscall(libc::SYS_seccomp, operation, 0, data) };
     if rc < 0 {
-        return Err(Trap::internal()
-            .with_detail("mechanism", "seccomp")
-            .with_detail("errno", format!("{}", Errno::last())));
+        return Err(LandstripError::IoFailed(io::Error::last_os_error()).into());
     }
 
     Ok(())
@@ -555,7 +538,7 @@ fn receive_notification(fd: RawFd) -> Result<libc::seccomp_notif> {
             Ok(_) => return Ok(request),
             Err(Errno::EINTR) => continue,
             Err(error) => {
-                return Err(system_errno(error as i32));
+                return Err(LandstripError::from(error).into());
             }
         }
     }
@@ -568,7 +551,7 @@ fn respond_notification(fd: RawFd, mut response: libc::seccomp_notif_resp) -> Re
             Ok(_) => return Ok(()),
             Err(Errno::EINTR) => continue,
             Err(error) => {
-                return Err(system_errno(error as i32));
+                return Err(LandstripError::from(error).into());
             }
         }
     }
@@ -582,14 +565,10 @@ fn validate_notification_id(fd: RawFd, id: u64) -> Result<bool> {
             Err(Errno::EINTR) => continue,
             Err(Errno::ENOENT) => return Ok(false),
             Err(error) => {
-                return Err(system_errno(error as i32));
+                return Err(LandstripError::from(error).into());
             }
         }
     }
-}
-
-fn system_errno(errno: i32) -> Trap {
-    Trap::internal().with_detail("errno", errno.to_string())
 }
 
 fn process_context(pid: u32) -> ProcessContext {
@@ -923,7 +902,8 @@ pub(super) fn network_filter(config: NetworkFilter, needs_network: bool) -> Resu
         )?;
     }
 
-    let eafnosupport = u32::try_from(libc::EAFNOSUPPORT).map_err(|_| Trap::internal())?;
+    let eafnosupport =
+        u32::try_from(libc::EAFNOSUPPORT).map_err(|_| LandstripError::IntegerTooLarge)?;
     let errno = if errno_rules.is_empty() {
         None
     } else {
@@ -972,17 +952,23 @@ impl NetworkFilters {
         if let Some(errno) = &self.errno {
             load_program(errno, 0)?;
         }
-        let notify = self.notify.as_ref().ok_or_else(Trap::internal)?;
+        let notify = self.notify.as_ref().ok_or_else(|| {
+            LandstripError::IoFailed(io::Error::other("seccomp notify filter unavailable"))
+        })?;
 
-        load_program(notify, libc::SECCOMP_FILTER_FLAG_NEW_LISTENER)?.ok_or_else(Trap::internal)
+        let listener =
+            load_program(notify, libc::SECCOMP_FILTER_FLAG_NEW_LISTENER)?.ok_or_else(|| {
+                LandstripError::IoFailed(io::Error::other("seccomp listener unavailable"))
+            })?;
+        Ok(listener)
     }
 }
 
 fn build_filter(rules: RuleMap, match_action: SeccompAction) -> Result<BpfProgram> {
     let filter = SeccompFilter::new(rules, SeccompAction::Allow, match_action, target_arch()?)
-        .map_err(Trap::policy_stdin_source)?;
+        .map_err(|source| anyhow!("policy stdin: {source}"))?;
     let program = <BpfProgram as TryFrom<SeccompFilter>>::try_from(filter)
-        .map_err(Trap::policy_stdin_source)?;
+        .map_err(|source| anyhow!("policy stdin: {source}"))?;
 
     Ok(program)
 }
@@ -995,12 +981,8 @@ fn build_notify_filter(syscalls: &[i64]) -> Result<BpfProgram> {
 
     program.push(bpf_stmt(load_syscall, 0));
     for syscall in syscalls {
-        program.push(bpf_jump(
-            jump_eq,
-            u32::try_from(*syscall).map_err(|_| Trap::internal())?,
-            0,
-            1,
-        ));
+        let syscall = u32::try_from(*syscall).map_err(|_| LandstripError::IntegerTooLarge)?;
+        program.push(bpf_jump(jump_eq, syscall, 0, 1));
         program.push(bpf_stmt(ret, libc::SECCOMP_RET_USER_NOTIF));
     }
     program.push(bpf_stmt(ret, libc::SECCOMP_RET_ALLOW));
@@ -1009,7 +991,7 @@ fn build_notify_filter(syscalls: &[i64]) -> Result<BpfProgram> {
 }
 
 fn bpf_code(code: u32) -> Result<u16> {
-    u16::try_from(code).map_err(|_| Trap::internal())
+    u16::try_from(code).map_err(|_| LandstripError::IntegerTooLarge.into())
 }
 
 fn bpf_stmt(code: u16, k: u32) -> seccompiler::sock_filter {
@@ -1030,21 +1012,22 @@ fn target_arch() -> Result<TargetArch> {
         "x86_64" => Ok(TargetArch::x86_64),
         "aarch64" => Ok(TargetArch::aarch64),
         "riscv64" => Ok(TargetArch::riscv64),
-        arch => Err(Trap::internal().with_detail("arch", arch)),
+        arch => Err(anyhow!("unsupported seccomp target architecture: {arch}")),
     }
 }
 
 fn load_program(program: &BpfProgram, flags: libc::c_ulong) -> Result<Option<OwnedFd>> {
     if program.is_empty() {
-        return Err(Trap::internal());
+        return Err(LandstripError::IoFailed(io::Error::other("empty seccomp program")).into());
     }
 
     // SAFETY: prctl(2) copies scalar arguments only.
     if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
-        return Err(system_errno(Errno::last() as i32));
+        return Err(LandstripError::IoFailed(io::Error::last_os_error()).into());
     }
 
-    let len = libc::c_ushort::try_from(program.len()).map_err(|_| Trap::internal())?;
+    let len =
+        libc::c_ushort::try_from(program.len()).map_err(|_| LandstripError::IntegerTooLarge)?;
     let filter = SockFilterProg {
         len,
         filter: program.as_ptr(),
@@ -1060,14 +1043,14 @@ fn load_program(program: &BpfProgram, flags: libc::c_ulong) -> Result<Option<Own
         )
     };
     if rc < 0 {
-        return Err(system_errno(Errno::last() as i32));
+        return Err(LandstripError::IoFailed(io::Error::last_os_error()).into());
     }
 
     if flags & libc::SECCOMP_FILTER_FLAG_NEW_LISTENER == 0 {
         return Ok(None);
     }
 
-    let fd = RawFd::try_from(rc).map_err(|_| Trap::internal())?;
+    let fd = RawFd::try_from(rc).map_err(|_| LandstripError::IntegerTooLarge)?;
     // SAFETY: seccomp returned a new listener fd when NEW_LISTENER was set.
     Ok(Some(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
@@ -1078,7 +1061,7 @@ fn seccomp_condition(
     value: u64,
 ) -> Result<SeccompCondition> {
     SeccompCondition::new(arg_index, SeccompCmpArgLen::Dword, operator, value)
-        .map_err(Trap::policy_stdin_source)
+        .map_err(|source| anyhow!("policy stdin: {source}"))
 }
 
 fn add_conditional_rule(
@@ -1086,7 +1069,7 @@ fn add_conditional_rule(
     syscall: i64,
     conditions: Vec<SeccompCondition>,
 ) -> Result<()> {
-    let rule = SeccompRule::new(conditions).map_err(Trap::policy_stdin_source)?;
+    let rule = SeccompRule::new(conditions).map_err(|source| anyhow!("policy stdin: {source}"))?;
     rules.entry(syscall).or_default().push(rule);
 
     Ok(())
@@ -1144,11 +1127,11 @@ pub(super) enum UnixSocketFilter {
 }
 
 fn add_socket_family_filter(rules: &mut RuleMap, socket: i64) -> Result<()> {
-    let stream = u64::try_from(libc::SOCK_STREAM).map_err(|_| Trap::internal())?;
-    let tcp = u64::try_from(libc::IPPROTO_TCP).map_err(|_| Trap::internal())?;
+    let stream = u64::try_from(libc::SOCK_STREAM).map_err(|_| LandstripError::IntegerTooLarge)?;
+    let tcp = u64::try_from(libc::IPPROTO_TCP).map_err(|_| LandstripError::IntegerTooLarge)?;
 
     for domain in [libc::AF_INET, libc::AF_INET6] {
-        let domain = u64::try_from(domain).map_err(|_| Trap::internal())?;
+        let domain = u64::try_from(domain).map_err(|_| LandstripError::IntegerTooLarge)?;
 
         for ty in 0..=SOCK_TYPE_MASK {
             if ty == stream {
@@ -1196,7 +1179,7 @@ fn add_socket_family_filter(rules: &mut RuleMap, socket: i64) -> Result<()> {
 }
 
 fn add_socket_domain_filter(rules: &mut RuleMap, socket: i64, domain: i32) -> Result<()> {
-    let domain = u64::try_from(domain).map_err(|_| Trap::internal())?;
+    let domain = u64::try_from(domain).map_err(|_| LandstripError::IntegerTooLarge)?;
 
     add_conditional_rule(
         rules,
@@ -1352,28 +1335,30 @@ fn handle_openat(
                     let grant = Grant::open(&resolved, flags, mode);
                     return Ok(NotificationResult::query(
                         qid,
-                        Trap::filesystem_query(
-                            TrapOperation::Write,
-                            resolved,
-                            path,
-                            syscall_name,
-                            open_flags(flags),
-                            reason,
-                            process_context(request.pid),
-                            qid,
+                        Trap::filesystem(
+                            FilesystemDenial {
+                                operation: TrapOperation::Write,
+                                path: resolved,
+                                requested_path: path,
+                                syscall: syscall_name,
+                                flags: open_flags(flags),
+                                reason,
+                                process: process_context(request.pid),
+                            },
+                            Some(qid),
                         ),
                         grant,
                     ));
                 }
-                denials.record(Denial::Filesystem(
-                    TrapOperation::Write,
-                    resolved.clone(),
-                    path.clone(),
-                    syscall_name,
-                    open_flags(flags),
+                denials.record(Denial::Filesystem(FilesystemDenial {
+                    operation: TrapOperation::Write,
+                    path: resolved.clone(),
+                    requested_path: path.clone(),
+                    syscall: syscall_name,
+                    flags: open_flags(flags),
                     reason,
-                    process_context(request.pid),
-                ));
+                    process: process_context(request.pid),
+                }));
             }
             return Err(BrokerError::PolicyDenied);
         }
@@ -1391,28 +1376,30 @@ fn handle_openat(
                 let grant = Grant::open(&resolved, flags, mode);
                 return Ok(NotificationResult::query(
                     qid,
-                    Trap::filesystem_query(
-                        TrapOperation::Read,
-                        resolved,
-                        path,
-                        syscall_name,
-                        open_flags(flags),
-                        reason,
-                        process_context(request.pid),
-                        qid,
+                    Trap::filesystem(
+                        FilesystemDenial {
+                            operation: TrapOperation::Read,
+                            path: resolved,
+                            requested_path: path,
+                            syscall: syscall_name,
+                            flags: open_flags(flags),
+                            reason,
+                            process: process_context(request.pid),
+                        },
+                        Some(qid),
                     ),
                     grant,
                 ));
             }
-            denials.record(Denial::Filesystem(
-                TrapOperation::Read,
-                resolved,
-                path,
-                syscall_name,
-                open_flags(flags),
+            denials.record(Denial::Filesystem(FilesystemDenial {
+                operation: TrapOperation::Read,
+                path: resolved,
+                requested_path: path,
+                syscall: syscall_name,
+                flags: open_flags(flags),
                 reason,
-                process_context(request.pid),
-            ));
+                process: process_context(request.pid),
+            }));
             return Err(BrokerError::PolicyDenied);
         }
     }
@@ -1664,15 +1651,15 @@ fn handle_mutation(
         .expect("a denied slot is always resolved");
 
     if !query_enabled {
-        denials.record(Denial::Filesystem(
-            TrapOperation::Write,
-            resolved,
-            path,
-            spec.name,
-            Vec::new(),
+        denials.record(Denial::Filesystem(FilesystemDenial {
+            operation: TrapOperation::Write,
+            path: resolved,
+            requested_path: path,
+            syscall: spec.name,
+            flags: Vec::new(),
             reason,
-            process_context(request.pid),
-        ));
+            process: process_context(request.pid),
+        }));
         return Err(BrokerError::PolicyDenied);
     }
 
@@ -1681,15 +1668,17 @@ fn handle_mutation(
     let grant = Grant::mutation(spec, request, pid, &slots)?;
     Ok(NotificationResult::query(
         qid,
-        Trap::filesystem_query(
-            TrapOperation::Write,
-            resolved,
-            path,
-            spec.name,
-            Vec::new(),
-            reason,
-            process_context(request.pid),
-            qid,
+        Trap::filesystem(
+            FilesystemDenial {
+                operation: TrapOperation::Write,
+                path: resolved,
+                requested_path: path,
+                syscall: spec.name,
+                flags: Vec::new(),
+                reason,
+                process: process_context(request.pid),
+            },
+            Some(qid),
         ),
         grant,
     ))
@@ -2224,7 +2213,7 @@ fn send_fd(socket: &UnixStream, fd: RawFd) -> Result<()> {
         None,
     )
     .map(|_| ())
-    .map_err(|error| system_errno(error as i32))
+    .map_err(|error| LandstripError::from(error).into())
 }
 
 fn recv_fd(socket: &UnixStream) -> Result<OwnedFd> {
@@ -2237,16 +2226,16 @@ fn recv_fd(socket: &UnixStream) -> Result<OwnedFd> {
         Some(&mut control),
         MsgFlags::empty(),
     )
-    .map_err(|error| system_errno(error as i32))?;
+    .map_err(LandstripError::from)?;
 
     if message.bytes == 0 {
-        return Err(Trap::internal());
+        return Err(LandstripError::IoFailed(io::Error::other(
+            "file descriptor message was empty",
+        ))
+        .into());
     }
 
-    for control in message
-        .cmsgs()
-        .map_err(|error| system_errno(error as i32))?
-    {
+    for control in message.cmsgs().map_err(LandstripError::from)? {
         if let ControlMessageOwned::ScmRights(fds) = control {
             let Some(fd) = fds.first().copied() else {
                 continue;
@@ -2255,8 +2244,10 @@ fn recv_fd(socket: &UnixStream) -> Result<OwnedFd> {
             return Ok(unsafe { OwnedFd::from_raw_fd(fd) });
         }
     }
-
-    Err(Trap::internal())
+    Err(LandstripError::IoFailed(io::Error::other(
+        "file descriptor message did not contain a file descriptor",
+    ))
+    .into())
 }
 
 #[derive(Debug)]

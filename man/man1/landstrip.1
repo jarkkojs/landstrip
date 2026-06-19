@@ -81,6 +81,7 @@ The relevant policy shape is:
     "allowLocalBinding": false,
     "allowUnixSockets": ["/run/user/1000/agent.sock"],
     "allowAllUnixSockets": false
+  }
 }
 .Ed
 .Pp
@@ -192,21 +193,16 @@ allowlists; unrestricted read policy is rejected. AppContainer profiles and ACL
 grants can persist after the sandboxed process exits.
 .Sh OUTPUT
 .Nm
-prints trap responses as JSON objects on standard error,
-one object per line. Each object is a flat record with a fixed
+prints sandbox denial traps as JSON objects on standard error,
+one object per line. Each object has a fixed
 .Va kind
 discriminant and a stable
 .Va code .
-.Bd -literal -offset indent
-{"kind":"internal","code":"INTERNAL_ERROR","detail":{"file":"policy.json","source":"expected value at line 1 column 1"}}
-.Ed
 The trap kinds are
 .Va filesystem
 (a filesystem access denial, with
 .Va code
-.Va FS_READ_DENIED
-or
-.Va FS_WRITE_DENIED ,
+.Va FILESYSTEM_DENIED ,
 an
 .Va operation
 of
@@ -218,13 +214,11 @@ and a
 of
 .Va seccomp ,
 the user-notification broker being the only layer with a per-denial
-callback ) ,
+callback ) and
 .Va network
 (a denied TCP connect or bind, with
 .Va code
-.Va NET_CONNECT_DENIED
-or
-.Va NET_BIND_DENIED ,
+.Va NETWORK_DENIED ,
 an
 .Va operation
 of
@@ -234,29 +228,13 @@ or
 and a
 .Va target
 of
-.Ar address : Ns Ar port ) ,
-.Va launch
-(the tool could not be started, with
-.Va code
-.Va LAUNCH_FAILED
-and
-.Va program
-and
-.Va message
-fields ) ,
-.Va internal
-(any other policy, platform, or system error, with
-.Va code
-.Va INTERNAL_ERROR
-and a
-.Va detail
-object of diagnostic key/value pairs).
+.Ar address : Ns Ar port ) .
 .Pp
-Usage errors are printed as plain text and exit with status 2. Logs and
-sandboxed command output are not part of the trap response. Normal successful
-command execution does not print a trap
-because standard error belongs to landstrip and standard output belongs to the
-sandboxed command.
+Usage, policy, launch, platform, and other system errors are printed as plain
+text. Usage errors exit with status 2. Logs and sandboxed command output are
+not part of the trap response. Normal successful command execution does not
+print a trap because standard error belongs to landstrip and standard output
+belongs to the sandboxed command.
 .Pp
 When
 .Fl -trap-fd Ar fd
@@ -265,7 +243,7 @@ is used,
 writes JSON trap responses to that file descriptor.
 For example, Linux filesystem denials are emitted as:
 .Bd -literal -offset indent
-{"Filesystem":["write","/repo/out","seccomp"]}
+{"kind":"filesystem","code":"FILESYSTEM_DENIED","operation":"write","path":"/repo/out","requested_path":"out","syscall":"openat","errno":"EACCES","flags":["O_WRONLY","O_CREAT"],"reason":"allow_miss","suggested_grant":{"allowWrite":"/repo/out"},"mechanism":"seccomp","process":{"pid":1234,"exe":"/usr/bin/sh","cwd":"/repo"}}
 .Ed
 This trap stream is separate from the sandboxed command's standard output
 and standard error.
@@ -279,7 +257,6 @@ and returns that command's exit status. When seccomp user notification is needed
 supervises the sandboxed child and exits with the child's status. If policy
 loading or sandbox setup fails,
 .Nm
-prints a formatted response and exits non-zero.
-Usage errors exit with status 2.
+prints a plain-text error and exits non-zero. Usage errors exit with status 2.
 .Sh AUTHORS
 .An Jarkko Sakkinen Aq Mt jarkko.sakkinen@iki.fi
