@@ -61,7 +61,7 @@ fn reject_unsupported_unix_socket_policy(policy: &AccessPolicy) -> Result<()> {
     };
 
     for path in paths {
-        let Ok(metadata) = fs::metadata(path) else {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
             return Err(Trap::internal()
                 .with_detail("feature", "Unix socket path")
                 .with_detail("path", path.to_string_lossy()));

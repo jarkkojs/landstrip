@@ -407,8 +407,13 @@ if [ "$os_name" = Darwin ]; then
     sleep 1
     policy=$(write_policy '{"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%s"]}}' "$unix_sock")
     test_ok "allowUnixSockets permits exact socket path" "$policy" "$nc_path" -U "$unix_sock"
+    unix_link="$unix_dir/socket-link"
+    ln -s allowed.sock "$unix_link"
+    policy=$(write_policy '{"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%s"]}}' "$unix_link")
+    test_fail "allowUnixSockets rejects symlink path" "$policy" "$sandbox_shell" -c 'printf ok\n'
     kill "$unix_pid" 2>/dev/null || true
     wait "$unix_pid" 2>/dev/null || true
+    rm -f "$unix_link"
 
     policy=$(write_policy '{"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%s"]}}' "$unix_dir")
     test_fail "allowUnixSockets rejects directory path" "$policy" "$sandbox_shell" -c 'printf ok\n'
