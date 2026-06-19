@@ -21,11 +21,20 @@ pub(crate) fn execute(
     args: &[OsString],
     trap_fd: &TrapFd,
 ) -> Result<()> {
+    reject_unsupported_policy(policy)?;
     let profile = render_profile(policy).map_err(Trap::policy_stdin_source)?;
     apply_profile(&profile)?;
     trap_fd.close();
     let error = Command::new(tool).args(args).exec();
     Err(Trap::tool_exec(Some(tool.to_os_string()), &error))
+}
+
+fn reject_unsupported_policy(policy: &AccessPolicy) -> Result<()> {
+    if matches!(&policy.read_access, ReadAccess::AllowRoots(roots) if roots.is_empty()) {
+        return Err(Trap::internal().with_detail("feature", "empty read access"));
+    }
+
+    Ok(())
 }
 
 fn apply_profile(profile: &str) -> Result<()> {

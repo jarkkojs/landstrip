@@ -325,6 +325,10 @@ test_fail "allowWrite denies other root" "$policy" "$sandbox_shell" -c ': > "$1/
 
 policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["/dev/null"],"denyRead":["/"],"allowRead":["/"]}}')
 test_ok "dev null read and write are permitted" "$policy" "$sandbox_shell" -c 'cat /dev/null >/dev/null'
+if [ "$os_name" = Darwin ]; then
+    policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["/dev/null"],"denyRead":["/"]}}')
+    test_fail "denyRead root blocks directory listing" "$policy" /bin/ls /
+fi
 
 policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s/allowed"],"denyRead":["/"],"allowRead":["/"]}}' "$tmp")
 expect_success_access_denied "successful write denial is reported" "/dev/null" write \
