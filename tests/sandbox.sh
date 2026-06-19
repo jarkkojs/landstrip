@@ -412,6 +412,13 @@ if [ "$os_name" = Darwin ]; then
 
     policy=$(write_policy '{"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%s"]}}' "$unix_dir")
     test_fail "allowUnixSockets rejects directory path" "$policy" "$sandbox_shell" -c 'printf ok\n'
+    unix_file="$unix_dir/not-a-socket"
+    : > "$unix_file"
+    policy=$(write_policy '{"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%s"]}}' "$unix_file")
+    test_fail "allowUnixSockets rejects regular file path" "$policy" "$sandbox_shell" -c 'printf ok\n'
+
+    policy=$(write_policy '{"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%s"]}}' "$unix_dir/missing.sock")
+    test_fail "allowUnixSockets rejects missing path" "$policy" "$sandbox_shell" -c 'printf ok\n'
 fi
 
 if [ "$os_name" = Linux ]; then

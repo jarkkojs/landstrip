@@ -10,6 +10,7 @@ use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fmt::{self, Write};
 use std::fs;
 use std::os::fd::RawFd;
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -59,8 +60,17 @@ fn reject_unsupported_unix_socket_policy(policy: &AccessPolicy) -> Result<()> {
         return Ok(());
     };
 
-    if paths.iter().any(|path| path.is_dir()) {
-        return Err(Trap::internal().with_detail("feature", "Unix socket directory access"));
+    for path in paths {
+        let Ok(metadata) = fs::metadata(path) else {
+            return Err(Trap::internal()
+                .with_detail("feature", "Unix socket path")
+                .with_detail("path", path.to_string_lossy()));
+        };
+        if !metadata.file_type().is_socket() {
+            return Err(Trap::internal()
+                .with_detail("feature", "Unix socket path")
+                .with_detail("path", path.to_string_lossy()));
+        }
     }
 
     Ok(())
