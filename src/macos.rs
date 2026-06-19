@@ -28,6 +28,9 @@ pub(crate) fn execute(
     trap_fd: &TrapFd,
 ) -> Result<()> {
     let profile = render_profile(policy).context("render sandbox profile")?;
+    if std::env::var_os("LANDSTRIP_DUMP_SBPL").is_some() {
+        eprint!("{profile}");
+    }
     apply_profile(&profile)?;
     trap_fd.close();
     close_inherited_fds();

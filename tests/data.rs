@@ -655,17 +655,22 @@ fn run_unix_allowed(
         .map_err(|e| format!("spawn unix server: {e}"))?;
     std::thread::sleep(std::time::Duration::from_secs(1));
 
-    let status = landstrip_net(ctx, format, policies)
+    let output = landstrip_net(ctx, format, policies)
         .arg(&ctx.nc)
         .arg("-U")
         .arg(sock)
-        .stdout(Stdio::null())
+        .env("LANDSTRIP_DUMP_SBPL", "1")
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .status();
+        .output();
     stop(&mut server);
-    match status {
-        Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(format!("unix connect failed status={status:?}")),
+    match output {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => Err(format!(
+            "unix connect failed status={:?}; output={}",
+            output.status,
+            merge(&output.stdout, &output.stderr).trim()
+        )),
         Err(error) => Err(format!("unix connect spawn: {error}")),
     }
 }
