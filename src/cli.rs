@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
-use crate::trap::{Result, Trap};
 use argh::FromArgs;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process;
+
+type Result<T> = std::result::Result<T, String>;
 
 const PROGRAM_NAME: &str = "landstrip";
 
@@ -109,14 +110,14 @@ fn parse_cli_action(
     }
 
     if tool_tail.is_empty() {
-        return Err(Trap::usage(tool_required_usage(&program_name)));
+        return Err(tool_required_usage(&program_name));
     }
 
     debug_assert!(options.tool.is_none());
     let mut tool_tail = tool_tail.into_iter();
     let tool = tool_tail
         .next()
-        .ok_or_else(|| Trap::usage(tool_required_usage(PROGRAM_NAME)))?;
+        .ok_or_else(|| tool_required_usage(PROGRAM_NAME))?;
 
     Ok(CliAction::Run(Cli {
         policy_paths: options.policy,
@@ -242,7 +243,7 @@ fn parse_cli_options(
     for arg in args {
         let string = arg
             .into_string()
-            .map_err(|_| Trap::usage("argument encoding"))?;
+            .map_err(|_| "argument encoding".to_owned())?;
 
         arg_strings.push(string);
     }
@@ -261,7 +262,7 @@ fn parse_cli_options(
                     .next()
                     .filter(|line| !line.is_empty())
                     .unwrap_or("arguments invalid");
-                Err(Trap::usage(message))
+                Err(message.to_owned())
             }
         }
     }

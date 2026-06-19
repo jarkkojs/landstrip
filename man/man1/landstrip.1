@@ -244,13 +244,6 @@ and
 and
 .Va message
 fields ) ,
-.Va Usage
-(a command-line usage error, with
-.Va code
-.Va USAGE_ERROR
-and a
-.Va message
-field), and
 .Va internal
 (any other policy, platform, or system error, with
 .Va code
@@ -259,8 +252,9 @@ and a
 .Va detail
 object of diagnostic key/value pairs).
 .Pp
-Usage errors exit with status 2. Logs and sandboxed command output are not part
-of the trap response. Normal successful command execution does not print a trap
+Usage errors are printed as plain text and exit with status 2. Logs and
+sandboxed command output are not part of the trap response. Normal successful
+command execution does not print a trap
 because standard error belongs to landstrip and standard output belongs to the
 sandboxed command.
 .Pp

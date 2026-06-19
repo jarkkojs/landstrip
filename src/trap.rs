@@ -87,10 +87,6 @@ pub(crate) enum Trap {
         program: String,
         message: String,
     },
-    Usage {
-        code: &'static str,
-        message: String,
-    },
     Internal {
         code: &'static str,
         detail: BTreeMap<String, String>,
@@ -102,13 +98,6 @@ impl Trap {
         Self::Internal {
             code: "INTERNAL_ERROR",
             detail: BTreeMap::new(),
-        }
-    }
-
-    pub(crate) fn usage(message: impl Into<String>) -> Self {
-        Self::Usage {
-            code: "USAGE_ERROR",
-            message: message.into(),
         }
     }
 
@@ -226,10 +215,6 @@ impl Trap {
 
     pub(crate) fn emit(&self) {
         eprintln!("{}", serde_json::to_string(self).unwrap_or_default());
-    }
-
-    pub(crate) fn is_usage(&self) -> bool {
-        matches!(self, Self::Usage { .. })
     }
 
     #[cfg_attr(not(unix), allow(dead_code))]

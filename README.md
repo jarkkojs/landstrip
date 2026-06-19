@@ -135,11 +135,11 @@ The trap kinds are:
   context.
 - `launch`: the tool could not be started. The stable `code` is `LAUNCH_FAILED`;
   `program` and `message` give the program and the failure detail.
-- `usage`: a command-line usage error. The stable `code` is `USAGE_ERROR`;
-  `message` is the error text. Usage errors exit with status 2.
 - `internal`: any other policy, platform, or system error. The stable `code` is
   `INTERNAL_ERROR`; `detail` is an object of diagnostic key/value pairs (for
   example `source`, `file`, or platform API details).
+
+Usage errors are printed as plain text and exit with status 2.
 
 The `reason` field is a platform-independent classification of the policy
 decision, derived from the policy and the requested path rather than from the

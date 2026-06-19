@@ -28,7 +28,10 @@ use crate::trap_fd::TrapFd;
 use std::process;
 
 fn main() {
-    let cli = parse_cli().unwrap_or_else(|e| exit_with_trap(&e));
+    let cli = parse_cli().unwrap_or_else(|error| {
+        eprintln!("{error}");
+        process::exit(2);
+    });
 
     if let Err(trap) = run_with_cli(&cli) {
         exit_with_trap(&trap);
@@ -37,7 +40,7 @@ fn main() {
 
 fn exit_with_trap(trap: &Trap) -> ! {
     trap.emit();
-    process::exit(if trap.is_usage() { 2 } else { 1 });
+    process::exit(1);
 }
 
 fn run_with_cli(cli: &Cli) -> Result<()> {

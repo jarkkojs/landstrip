@@ -335,6 +335,22 @@ expect_connect_denied() {
     fi
 }
 
+diag=$tmp/usage-trap-fd.txt
+rm -f "$diag"
+set +e
+output=$("$bin" --trap-fd 3 3>"$diag" 2>&1)
+status=$?
+set -e
+if [ "$status" -eq 2 ] && [ ! -s "$diag" ] && \
+    printf '%s\n' "$output" | grep -F -q 'Usage:' && \
+    ! printf '%s\n' "$output" | grep -F -q '"kind":"usage"' && \
+    ! printf '%s\n' "$output" | grep -F -q 'USAGE_ERROR'; then
+    pass "usage error is plain stderr only"
+else
+    diag_output=$(cat "$diag" 2>/dev/null || true)
+    fail "usage error is plain stderr only" "status=$status output=$output trap_fd=$diag_output"
+fi
+
 policy=$(write_policy '{"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%s/allowed"]}}' "$tmp")
 test_ok "unrestricted read policy runs tool" "$policy" "$sandbox_shell" -c 'printf ok\\n'
 
