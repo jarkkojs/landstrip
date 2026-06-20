@@ -51,6 +51,11 @@ const POLL_MS: u16 = 100;
 const SOCK_TYPE_MASK: u64 = 0x0f;
 const SECCOMP_IOC_MAGIC: u8 = b'!';
 const USER_NOTIF_FLAG_CONTINUE: u32 = 1 << 0;
+const SECCOMP_DATA_NR_OFFSET: u32 = 0;
+const SECCOMP_DATA_ARCH_OFFSET: u32 = 4;
+const AUDIT_ARCH_X86_64: u32 = 0xC000_003E;
+const AUDIT_ARCH_AARCH64: u32 = 0xC000_00B7;
+const AUDIT_ARCH_RISCV64: u32 = 0xC000_00F3;
 
 nix::ioctl_readwrite!(
     seccomp_notif_recv,
@@ -974,12 +979,23 @@ fn build_filter(rules: RuleMap, match_action: SeccompAction) -> Result<BpfProgra
 }
 
 fn build_notify_filter(syscalls: &[i64]) -> Result<BpfProgram> {
-    let mut program = BpfProgram::with_capacity(syscalls.len() * 2 + 2);
-    let load_syscall = bpf_code(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS)?;
+    let mut program = BpfProgram::with_capacity(syscalls.len() * 2 + 5);
+    let load = bpf_code(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS)?;
     let jump_eq = bpf_code(libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K)?;
     let ret = bpf_code(libc::BPF_RET | libc::BPF_K)?;
 
-    program.push(bpf_stmt(load_syscall, 0));
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => Ok(AUDIT_ARCH_X86_64),
+        "aarch64" => Ok(AUDIT_ARCH_AARCH64),
+        "riscv64" => Ok(AUDIT_ARCH_RISCV64),
+        arch => Err(anyhow!("seccomp: unsupported arch: {arch}")),
+    }?;
+
+    program.push(bpf_stmt(load, SECCOMP_DATA_ARCH_OFFSET));
+    program.push(bpf_jump(jump_eq, arch, 1, 0));
+    program.push(bpf_stmt(ret, libc::SECCOMP_RET_KILL_PROCESS));
+
+    program.push(bpf_stmt(load, SECCOMP_DATA_NR_OFFSET));
     for syscall in syscalls {
         let syscall = u32::try_from(*syscall).map_err(|_| LandstripError::IntegerTooLarge)?;
         program.push(bpf_jump(jump_eq, syscall, 0, 1));
