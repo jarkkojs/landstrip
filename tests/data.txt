@@ -49,7 +49,7 @@ name=allowUnixSockets permits exact socket path | os=macos | setup=mkdir:unix-so
 name=allowUnixSockets rejects symlink path | os=macos | setup=mkdir:unix-sockets;symlink:allowed.sock:unix-sockets/socket-link | policy={"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%TMP%/unix-sockets/socket-link"]}} | cmd=%SHELL% -c 'printf ok' | status=!0
 name=allowUnixSockets rejects directory path | os=macos | setup=mkdir:unix-sockets | policy={"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%TMP%/unix-sockets"]}} | cmd=%SHELL% -c 'printf ok' | status=!0
 name=allowUnixSockets rejects regular file path | os=macos | setup=mkdir:unix-sockets;write:unix-sockets/not-a-socket: | policy={"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%TMP%/unix-sockets/not-a-socket"]}} | cmd=%SHELL% -c 'printf ok' | status=!0
-name=allowUnixSockets rejects missing path | os=macos | setup=mkdir:unix-sockets | policy={"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%TMP%/unix-sockets/missing.sock"]}} | cmd=%SHELL% -c 'printf ok' | status=!0
+name=allowUnixSockets permits missing path | os=macos | setup=mkdir:unix-sockets | policy={"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%TMP%/unix-sockets/missing.sock"]}} | cmd=%SHELL% -c 'printf ok' | status=0
 
 # --- TCP connect denial (Linux) ---
 

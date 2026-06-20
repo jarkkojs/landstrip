@@ -101,13 +101,19 @@ impl std::error::Error for AccessPolicyError {}
 
 #[cfg(target_os = "macos")]
 impl AccessPolicy {
-    /// Reject policies macOS Seatbelt cannot enforce: a non-socket
+    /// Reject policies macOS Seatbelt cannot enforce: an existing non-socket
     /// `allowUnixSockets` path or a `denyWrite` symlink ancestor.
     pub(crate) fn validate(&self) -> std::result::Result<(), AccessPolicyError> {
         if let UnixSocketAccess::AllowPaths(paths) = &self.network_access.unix_socket_access {
             for path in paths {
                 match fs::symlink_metadata(path) {
                     Ok(metadata) if metadata.file_type().is_socket() => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        log::debug!(
+                            "macos: allowUnixSockets path absent, skipping {}",
+                            path.display()
+                        );
+                    }
                     _ => return Err(AccessPolicyError::UnixSocketPath),
                 }
             }
