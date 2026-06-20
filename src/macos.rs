@@ -245,3 +245,29 @@ fn escape_sbpl_literal(path: &str) -> String {
     }
     escaped
 }
+
+fn take_sandbox_error(errorbuf: *mut libc::c_char) -> String {
+    if errorbuf.is_null() {
+        return "sandbox_init failed without an error message".to_string();
+    }
+
+    let message = unsafe { CStr::from_ptr(errorbuf) }
+        .to_string_lossy()
+        .into_owned();
+    unsafe { ffi::sandbox_free_error(errorbuf) };
+    message
+}
+
+mod ffi {
+    use libc::{c_char, c_int};
+
+    #[link(name = "sandbox")]
+    unsafe extern "C" {
+        pub(super) fn sandbox_init(
+            profile: *const c_char,
+            flags: u64,
+            errorbuf: *mut *mut c_char,
+        ) -> c_int;
+        pub(super) fn sandbox_free_error(errorbuf: *mut c_char);
+    }
+}
