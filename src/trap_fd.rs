@@ -70,7 +70,7 @@ fn write_trap_fd(fd: i32, line: &[u8]) {
                 continue;
             }
             log::debug!(
-                "trap fd write fd={fd} errno={}",
+                "trap: write fd={fd} errno={}",
                 error.raw_os_error().unwrap_or(0)
             );
             return;
@@ -90,7 +90,7 @@ fn close_trap_fd(fd: i32) {
     if rc != 0 {
         let error = std::io::Error::last_os_error();
         log::debug!(
-            "trap fd close fd={fd} errno={}",
+            "trap: close fd={fd} errno={}",
             error.raw_os_error().unwrap_or(0)
         );
     }

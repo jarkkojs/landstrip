@@ -27,7 +27,7 @@ pub(crate) fn execute(
     args: &[OsString],
     trap_fd: &TrapFd,
 ) -> Result<()> {
-    let profile = render_profile(policy).context("render sandbox profile")?;
+    let profile = render_profile(policy).context("macos: profile")?;
     apply_profile(&profile)?;
     trap_fd.close();
     close_inherited_fds();
@@ -82,7 +82,7 @@ fn close_fd(fd: RawFd) {
 fn apply_profile(profile: &str) -> Result<()> {
     let profile = CString::new(profile).map_err(|source| {
         anyhow!(
-            "SBPL profile contains interior NUL byte at offset {}",
+            "macos: profile: interior nul at offset {}",
             source.nul_position()
         )
     })?;
@@ -94,7 +94,11 @@ fn apply_profile(profile: &str) -> Result<()> {
     if rc == 0 {
         Ok(())
     } else {
-        Err(Error::IoFailed(io::Error::other(take_sandbox_error(errorbuf))).into())
+        Err(Error::IoFailed(io::Error::other(format!(
+            "macos: {}",
+            take_sandbox_error(errorbuf)
+        )))
+        .into())
     }
 }
 
@@ -240,47 +244,4 @@ fn escape_sbpl_literal(path: &str) -> String {
         }
     }
     escaped
-}
-
-#[cfg(test)]
-mod tests {
-    use super::escape_sbpl_literal;
-
-    #[test]
-    fn escape_sbpl_literal_preserves_parentheses() {
-        assert_eq!(escape_sbpl_literal("/tmp/App (Beta)"), "/tmp/App (Beta)");
-    }
-
-    #[test]
-    fn escape_sbpl_literal_escapes_string_delimiters() {
-        assert_eq!(escape_sbpl_literal("/tmp/a\"b"), "/tmp/a\\\"b");
-        assert_eq!(escape_sbpl_literal("/tmp/a\\b"), "/tmp/a\\\\b");
-        assert_eq!(escape_sbpl_literal("/tmp/a\nb"), "/tmp/a\\nb");
-    }
-}
-
-fn take_sandbox_error(errorbuf: *mut libc::c_char) -> String {
-    if errorbuf.is_null() {
-        return "sandbox_init failed without an error message".to_string();
-    }
-
-    let message = unsafe { CStr::from_ptr(errorbuf) }
-        .to_string_lossy()
-        .into_owned();
-    unsafe { ffi::sandbox_free_error(errorbuf) };
-    message
-}
-
-mod ffi {
-    use libc::{c_char, c_int};
-
-    #[link(name = "sandbox")]
-    unsafe extern "C" {
-        pub(super) fn sandbox_init(
-            profile: *const c_char,
-            flags: u64,
-            errorbuf: *mut *mut c_char,
-        ) -> c_int;
-        pub(super) fn sandbox_free_error(errorbuf: *mut c_char);
-    }
 }

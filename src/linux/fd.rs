@@ -30,7 +30,7 @@ pub(super) fn close_inherited_fds() {
 
     match Errno::last() {
         Errno::ENOSYS | Errno::EINVAL => {}
-        error => log::debug!("fd cleanup: close_range errno={}", error as i32),
+        error => log::debug!("fd: close_range errno={}", error as i32),
     }
 
     match fs::read_dir("/proc/self/fd") {
@@ -42,7 +42,7 @@ pub(super) fn close_inherited_fds() {
                 let entry = match entry {
                     Ok(entry) => entry,
                     Err(error) => {
-                        log::debug!("fd cleanup: proc entry: {error}");
+                        log::debug!("fd: proc entry: {error}");
                         fds.clear();
                         break;
                     }
@@ -74,7 +74,7 @@ pub(super) fn close_inherited_fds() {
                 return;
             }
         }
-        Err(error) => log::debug!("fd cleanup: open /proc/self/fd: {error}"),
+        Err(error) => log::debug!("fd: open /proc/self/fd: {error}"),
     }
 
     let mut rlimit = libc::rlimit {
@@ -133,6 +133,6 @@ fn close_fd(fd: RawFd) {
 
     let error = Errno::last();
     if error != Errno::EBADF {
-        log::debug!("fd cleanup: close({fd}) errno={}", error as i32);
+        log::debug!("fd: close fd={fd} errno={}", error as i32);
     }
 }

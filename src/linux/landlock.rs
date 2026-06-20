@@ -151,10 +151,7 @@ fn add_path_rules(ruleset: &OwnedFd, paths: &[PathBuf], access: u64, label: &str
                 if error.kind() == io::ErrorKind::NotFound
                     || error.kind() == io::ErrorKind::PermissionDenied =>
             {
-                log::debug!(
-                    "landlock: {label} path {} missing, skipping",
-                    path.display()
-                );
+                log::debug!("landlock: {label} path missing: {}", path.display());
                 continue;
             }
             Err(error) => return Err(Error::IoFailed(error).into()),

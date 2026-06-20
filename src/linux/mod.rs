@@ -34,7 +34,7 @@ pub(crate) fn execute(
         } else {
             "seccomp"
         };
-        log::debug!("{engine}: Unix socket policy enabled");
+        log::debug!("linux: unix socket policy with {engine} enabled");
     }
 
     let needs_fs_broker = seccomp::needs_filesystem_broker(policy) || trap_fd.is_enabled();

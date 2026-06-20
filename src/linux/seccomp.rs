@@ -214,7 +214,7 @@ pub(super) fn run_broker(
         }
         ForkResult::Parent { child } => {
             drop(child_sock);
-            let notify = recv_fd(&parent)?;
+            let notify = get_notify_fd(&parent)?;
             drop(parent);
             let notify_fd = notify.as_raw_fd();
 
@@ -958,22 +958,27 @@ impl NetworkFilters {
             load_program(errno, 0)?;
         }
         let notify = self.notify.as_ref().ok_or_else(|| {
-            LandstripError::IoFailed(io::Error::other("seccomp notify filter unavailable"))
+            LandstripError::IoFailed(io::Error::other("linux: notify filter missing"))
         })?;
 
-        let listener =
-            load_program(notify, libc::SECCOMP_FILTER_FLAG_NEW_LISTENER)?.ok_or_else(|| {
-                LandstripError::IoFailed(io::Error::other("seccomp listener unavailable"))
-            })?;
+        let listener = load_program(notify, libc::SECCOMP_FILTER_FLAG_NEW_LISTENER)?
+            .ok_or_else(|| LandstripError::IoFailed(io::Error::other("linux: listener missing")))?;
         Ok(listener)
     }
 }
 
 fn build_filter(rules: RuleMap, match_action: SeccompAction) -> Result<BpfProgram> {
-    let filter = SeccompFilter::new(rules, SeccompAction::Allow, match_action, target_arch()?)
-        .map_err(|source| anyhow!("policy stdin: {source}"))?;
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => Ok(TargetArch::x86_64),
+        "aarch64" => Ok(TargetArch::aarch64),
+        "riscv64" => Ok(TargetArch::riscv64),
+        arch => Err(anyhow!("linux: unsupported target arch: {arch}")),
+    }?;
+
+    let filter = SeccompFilter::new(rules, SeccompAction::Allow, match_action, arch)
+        .map_err(|source| anyhow!("linux: {source}"))?;
     let program = <BpfProgram as TryFrom<SeccompFilter>>::try_from(filter)
-        .map_err(|source| anyhow!("policy stdin: {source}"))?;
+        .map_err(|source| anyhow!("linux: {source}"))?;
 
     Ok(program)
 }
@@ -988,7 +993,7 @@ fn build_notify_filter(syscalls: &[i64]) -> Result<BpfProgram> {
         "x86_64" => Ok(AUDIT_ARCH_X86_64),
         "aarch64" => Ok(AUDIT_ARCH_AARCH64),
         "riscv64" => Ok(AUDIT_ARCH_RISCV64),
-        arch => Err(anyhow!("seccomp: unsupported arch: {arch}")),
+        arch => Err(anyhow!("linux: unsupported audit arch: {arch}")),
     }?;
 
     program.push(bpf_stmt(load, SECCOMP_DATA_ARCH_OFFSET));
@@ -1023,18 +1028,9 @@ fn bpf_jump(code: u16, k: u32, jt: u8, jf: u8) -> seccompiler::sock_filter {
     seccompiler::sock_filter { code, jt, jf, k }
 }
 
-fn target_arch() -> Result<TargetArch> {
-    match std::env::consts::ARCH {
-        "x86_64" => Ok(TargetArch::x86_64),
-        "aarch64" => Ok(TargetArch::aarch64),
-        "riscv64" => Ok(TargetArch::riscv64),
-        arch => Err(anyhow!("unsupported seccomp target architecture: {arch}")),
-    }
-}
-
 fn load_program(program: &BpfProgram, flags: libc::c_ulong) -> Result<Option<OwnedFd>> {
     if program.is_empty() {
-        return Err(LandstripError::IoFailed(io::Error::other("empty seccomp program")).into());
+        return Err(LandstripError::IoFailed(io::Error::other("linux: empty program")).into());
     }
 
     // SAFETY: prctl(2) copies scalar arguments only.
@@ -1077,7 +1073,7 @@ fn seccomp_condition(
     value: u64,
 ) -> Result<SeccompCondition> {
     SeccompCondition::new(arg_index, SeccompCmpArgLen::Dword, operator, value)
-        .map_err(|source| anyhow!("policy stdin: {source}"))
+        .map_err(|source| anyhow!("linux: {source}"))
 }
 
 fn add_conditional_rule(
@@ -1085,7 +1081,7 @@ fn add_conditional_rule(
     syscall: i64,
     conditions: Vec<SeccompCondition>,
 ) -> Result<()> {
-    let rule = SeccompRule::new(conditions).map_err(|source| anyhow!("policy stdin: {source}"))?;
+    let rule = SeccompRule::new(conditions).map_err(|source| anyhow!("linux: {source}"))?;
     rules.entry(syscall).or_default().push(rule);
 
     Ok(())
@@ -2232,7 +2228,7 @@ fn send_fd(socket: &UnixStream, fd: RawFd) -> Result<()> {
     .map_err(|error| LandstripError::from(error).into())
 }
 
-fn recv_fd(socket: &UnixStream) -> Result<OwnedFd> {
+fn get_notify_fd(socket: &UnixStream) -> Result<OwnedFd> {
     let mut byte = [0_u8];
     let mut iov = [IoSliceMut::new(&mut byte)];
     let mut control = nix::cmsg_space!([RawFd; 1]);
@@ -2245,10 +2241,9 @@ fn recv_fd(socket: &UnixStream) -> Result<OwnedFd> {
     .map_err(LandstripError::from)?;
 
     if message.bytes == 0 {
-        return Err(LandstripError::IoFailed(io::Error::other(
-            "file descriptor message was empty",
-        ))
-        .into());
+        return Err(
+            LandstripError::IoFailed(io::Error::other("linux: notify: unexpected eof")).into(),
+        );
     }
 
     for control in message.cmsgs().map_err(LandstripError::from)? {
@@ -2260,10 +2255,8 @@ fn recv_fd(socket: &UnixStream) -> Result<OwnedFd> {
             return Ok(unsafe { OwnedFd::from_raw_fd(fd) });
         }
     }
-    Err(LandstripError::IoFailed(io::Error::other(
-        "file descriptor message did not contain a file descriptor",
-    ))
-    .into())
+
+    Err(LandstripError::IoFailed(io::Error::other("linux: notify: invalid data")).into())
 }
 
 #[derive(Debug)]
