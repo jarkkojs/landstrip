@@ -672,7 +672,6 @@ fn run_unix_allowed(
         .arg(&ctx.nc)
         .arg("-U")
         .arg(sock)
-        .env("LANDSTRIP_DUMP_SBPL", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output();
