@@ -352,7 +352,12 @@ fn resolve_paths(
         .map(|path| {
             let path = resolve_sandbox_path(path, policy_base, home)?;
             let candidates = if path.to_string_lossy().bytes().any(is_glob_byte) {
-                expand_glob_path(&path)?
+                let matches = expand_glob_path(&path)?;
+                if matches.is_empty() && fs::symlink_metadata(&path).is_ok() {
+                    vec![path]
+                } else {
+                    matches
+                }
             } else {
                 vec![path]
             };
