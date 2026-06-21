@@ -67,10 +67,14 @@ fn close_inherited_fds() {
 }
 
 fn open_fd_limit() -> RawFd {
-    let limit = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
-    RawFd::try_from(limit).map_or(FALLBACK_FD_LIMIT, |limit| {
-        limit.clamp(FIRST_INHERITED_FD, FALLBACK_FD_LIMIT)
-    })
+    clamp_fd_limit(unsafe { libc::sysconf(libc::_SC_OPEN_MAX) })
+}
+
+fn clamp_fd_limit(limit: libc::c_long) -> RawFd {
+    if limit < i64::from(FIRST_INHERITED_FD) {
+        return FALLBACK_FD_LIMIT;
+    }
+    RawFd::try_from(limit).map_or(FALLBACK_FD_LIMIT, |limit| limit.min(FALLBACK_FD_LIMIT))
 }
 
 fn close_fd(fd: RawFd) {
