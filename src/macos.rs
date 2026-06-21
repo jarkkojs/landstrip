@@ -198,10 +198,6 @@ fn render_network_rules(sb: &mut String, network: &NetworkAccess) -> fmt::Result
         }
     }
 
-    if network.restrict_bind_tcp {
-        sb.push_str("(deny network-bind)\n");
-        sb.push_str("(deny network-inbound)\n");
-    }
     if network.local_tcp_bind {
         sb.push_str("(allow network-bind (local tcp \"localhost:*\"))\n");
         sb.push_str("(allow network-inbound (local tcp \"localhost:*\"))\n");
