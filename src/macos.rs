@@ -25,11 +25,10 @@ pub(crate) fn execute(
     policy: &AccessPolicy,
     tool: &OsStr,
     args: &[OsString],
-    trap_fd: &TrapFd,
+    _trap_fd: &TrapFd,
 ) -> Result<()> {
     let profile = render_profile(policy).context("macos: profile")?;
     apply_profile(&profile)?;
-    trap_fd.close();
     close_inherited_fds();
     let error = Command::new(tool).args(args).exec();
     Err(Error::IoFailed(error).into())

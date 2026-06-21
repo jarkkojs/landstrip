@@ -8,8 +8,9 @@ use crate::trap::Trap;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TrapFd {
-    // A raw descriptor is a unix-only `--trap-fd` concept; other platforms ignore it.
-    #[cfg_attr(not(unix), allow(dead_code))]
+    // A raw descriptor is a `--trap-fd` concept only the Linux broker acts on;
+    // other platforms accept the flag but ignore the descriptor.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fd: Option<i32>,
 }
 
@@ -30,7 +31,7 @@ impl TrapFd {
         })
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     pub(crate) fn close(&self) {
         if let Some(fd) = self.fd {
             close_trap_fd(fd);
@@ -83,7 +84,7 @@ fn write_trap_fd(fd: i32, line: &[u8]) {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn close_trap_fd(fd: i32) {
     // SAFETY: close(2) copies the scalar file descriptor argument.
     let rc = unsafe { libc::close(fd) };
