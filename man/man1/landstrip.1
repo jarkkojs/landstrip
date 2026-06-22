@@ -180,6 +180,53 @@ The traversal step gives deny rules snapshot semantics. Directories created
 outside the sandbox after policy setup are not exposed merely because their
 paths match a previous traversal result.
 .Pp
+On Linux,
+.Nm
+splits filesystem enforcement between Landlock and a seccomp user-notification
+broker. Landlock is the primary layer and does as much as the kernel can decide
+on its own, with no per-syscall round trip. Because Landlock grants access to
+filesystem objects rather than path strings, and cannot express a deny nested
+inside an allow, the policy is lowered first: denied subtrees are carved out of
+the allowed roots and only the surviving fragments are installed as
+.Va LANDLOCK_RULE_PATH_BENEATH
+rules. A denied path is therefore never added to the ruleset, and reads, writes,
+and executes under the allowed roots are enforced by the kernel in-process. This
+is the only layer active when the policy needs nothing more than static roots.
+.Pp
+The seccomp broker is added when the policy restricts writes or reads, and it
+covers what Landlock cannot. It intercepts the open family
+.Pf ( Xr openat 2 ,
+.Xr openat2 2 )
+together with the path-based mutator syscalls, resolves each argument to a real
+path against the calling process, and decides the access. The broker is also the
+only layer that can report a denial to the launcher, so it owns the
+.Fl -trap-fd
+and standard-error trap stream.
+.Pp
+The two layers are kept deliberately disjoint to avoid deciding the same access
+twice. Mutators that Landlock already governs \(em
+.Xr renameat2 2 ,
+.Xr linkat 2 ,
+.Xr symlinkat 2 ,
+.Xr unlinkat 2 ,
+.Xr mkdirat 2 ,
+.Xr mknodat 2 ,
+and
+.Xr truncate 2 \(em
+are observed by the broker only to surface a trap; the denial itself is left to
+Landlock unless a trap query is enabled. Operations that lie outside Landlock's
+access rights \(em ownership, timestamps, and the extended-attribute calls such
+as
+.Xr fchownat 2 ,
+.Xr utimensat 2 ,
+and
+.Xr setxattr 2 \(em
+have no kernel-level coverage, so for those the broker is the sole enforcer and
+always applies the allowlist. An open or mutation outside every allowed root is
+thus reported once: by the broker when it owns the decision, and by Landlock's
+.Er EACCES
+otherwise.
+.Pp
 On macOS,
 .Nm
 uses Seatbelt path rules.
@@ -241,10 +288,24 @@ When
 .Fl -trap-fd Ar fd
 is used,
 .Nm
-writes JSON trap responses to that file descriptor.
-For example, Linux filesystem denials are emitted as:
+writes JSON trap responses to that file descriptor. Each trap is emitted as a
+single line with no whitespace; the example below is indented and wrapped only
+for readability. A Linux filesystem denial carries these fields:
 .Bd -literal -offset indent
-{"kind":"filesystem","code":"FILESYSTEM_DENIED","operation":"write","path":"/repo/out","requested_path":"out","syscall":"openat","errno":"EACCES","flags":["O_WRONLY","O_CREAT"],"reason":"allow_miss","suggested_grant":{"allowWrite":"/repo/out"},"mechanism":"seccomp","process":{"pid":1234,"exe":"/usr/bin/sh","cwd":"/repo"}}
+{
+  "kind": "filesystem",
+  "code": "FILESYSTEM_DENIED",
+  "operation": "write",
+  "path": "/repo/out",
+  "requested_path": "out",
+  "syscall": "openat",
+  "errno": "EACCES",
+  "flags": ["O_WRONLY", "O_CREAT"],
+  "reason": "allow_miss",
+  "suggested_grant": {"allowWrite": "/repo/out"},
+  "mechanism": "seccomp",
+  "process": {"pid": 1234, "exe": "/usr/bin/sh", "cwd": "/repo"}
+}
 .Ed
 This trap stream is separate from the sandboxed command's standard output
 and standard error.
