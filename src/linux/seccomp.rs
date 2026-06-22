@@ -2187,18 +2187,18 @@ fn fs_read_denial_reason(policy: &AccessPolicy, path: &Path) -> Option<&'static 
     match &policy.read_access {
         ReadAccess::Unrestricted => None,
         ReadAccess::AllowRoots(roots) => {
-            if roots
-                .iter()
-                .any(|root| path == root || path.starts_with(root))
-            {
-                return None;
-            }
             if policy
                 .read_denied_roots
                 .iter()
                 .any(|root| path == root || path.starts_with(root))
             {
-                Some("deny_match")
+                return Some("deny_match");
+            }
+            if roots
+                .iter()
+                .any(|root| path == root || path.starts_with(root))
+            {
+                None
             } else {
                 Some("allow_miss")
             }

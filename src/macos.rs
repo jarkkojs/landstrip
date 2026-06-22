@@ -112,7 +112,7 @@ fn render_profile(policy: &AccessPolicy) -> std::result::Result<String, fmt::Err
 
     render_process_rules(&mut sb)?;
     render_write_rules(&mut sb, &policy.write_roots, &policy.write_denied_roots)?;
-    render_read_rules(&mut sb, &policy.read_access)?;
+    render_read_rules(&mut sb, &policy.read_access, &policy.read_denied_roots)?;
     render_network_rules(&mut sb, &policy.network_access)?;
 
     Ok(sb)
@@ -144,7 +144,11 @@ fn render_write_rules(
     Ok(())
 }
 
-fn render_read_rules(sb: &mut String, read_access: &ReadAccess) -> fmt::Result {
+fn render_read_rules(
+    sb: &mut String,
+    read_access: &ReadAccess,
+    read_denied_roots: &[PathBuf],
+) -> fmt::Result {
     match read_access {
         ReadAccess::Unrestricted => sb.push_str("(allow file-read*)\n"),
         ReadAccess::AllowRoots(roots) => {
@@ -155,6 +159,13 @@ fn render_read_rules(sb: &mut String, read_access: &ReadAccess) -> fmt::Result {
                 writeln!(sb, "(allow file-read* (subpath \"{escaped}\"))")?;
             }
             render_parent_dir_rules(sb, roots)?;
+
+            // Deny rules follow the allow rules so SBPL's last-match-wins
+            // precedence subtracts the denied subtrees from the read roots.
+            for root in read_denied_roots {
+                let escaped = escape_sbpl_literal(&root.to_string_lossy());
+                writeln!(sb, "(deny file-read* (subpath \"{escaped}\"))")?;
+            }
         }
     }
 

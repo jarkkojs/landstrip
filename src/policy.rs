@@ -238,8 +238,13 @@ pub(crate) fn resolve_policy(
 
     let read_allow = resolve_paths(&filesystem.allow_read, &policy_base, home)?;
     let read_deny = resolve_paths(&filesystem.deny_read, &policy_base, home)?;
+    let read_denied_roots = effective_denied_roots(&read_deny, &read_allow);
     let read_access = if read_deny.is_empty() {
         ReadAccess::Unrestricted
+    } else if read_allow.iter().any(|root| root == Path::new("/")) {
+        // A `/` allowRead grants the whole tree; the surviving denyRead roots are
+        // layered back as deny rules rather than by carving the live filesystem.
+        ReadAccess::AllowRoots(vec![PathBuf::from("/")])
     } else {
         let mut read_roots = subtract_denied_roots(vec![PathBuf::from("/")], &read_deny)?;
         // Re-add each allowRead root, but keep any denyRead strictly nested
@@ -268,7 +273,7 @@ pub(crate) fn resolve_policy(
         write_denied_roots: write_deny,
         write_denied_links,
         read_access,
-        read_denied_roots: read_deny,
+        read_denied_roots,
         network_access: lower_network_policy(network, &policy_base, home)?,
         windows: lower_windows_policy(windows),
     };
@@ -376,6 +381,24 @@ fn resolve_paths(
     normalize_roots(&mut resolved);
 
     Ok(resolved)
+}
+
+/// The `denyRead` roots that survive `allowRead` overrides.
+///
+/// An `allowRead` root that equals a `denyRead` root, or is nested under it,
+/// re-grants that subtree and overrides the broader-or-equal deny per the
+/// most-specific-rule-wins precedence. Such denies are dropped so they neither
+/// emit a macOS deny rule nor gate the Linux broker.
+fn effective_denied_roots(read_deny: &[PathBuf], read_allow: &[PathBuf]) -> Vec<PathBuf> {
+    read_deny
+        .iter()
+        .filter(|deny| {
+            !read_allow
+                .iter()
+                .any(|allow| allow.as_path() == deny.as_path() || allow.starts_with(deny))
+        })
+        .cloned()
+        .collect()
 }
 
 fn collect_symlink_ancestors(
