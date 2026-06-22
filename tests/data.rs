@@ -155,6 +155,7 @@ enum Net {
     ListenerDenied,
     ListenerAllowed,
     ConnectDenied,
+    ConnectAllowed,
     UnixAllowed,
 }
 
@@ -512,6 +513,7 @@ fn parse_net(value: &str) -> Net {
         "listener-denied" => Net::ListenerDenied,
         "listener-allowed" => Net::ListenerAllowed,
         "connect-denied" => Net::ConnectDenied,
+        "connect-allowed" => Net::ConnectAllowed,
         "unix-allowed" => Net::UnixAllowed,
         other => panic!("unknown net kind `{other}`"),
     }
@@ -571,6 +573,7 @@ fn run_net(
             run_listener(ctx, format, policies, allowed)
         }
         Net::ConnectDenied => run_connect_denied(ctx, format, policies),
+        Net::ConnectAllowed => run_connect_allowed(ctx, dir),
         Net::UnixAllowed => {
             let rel = unixsock
                 .as_ref()
@@ -650,6 +653,60 @@ fn run_connect_denied(
     } else {
         Err(format!("connect not denied; output={}", merged.trim()))
     }
+}
+
+/// Proves the loopback proxy-port allow rule: a sandboxed connect to the
+/// configured `httpProxyPort` succeeds, while a connect to a different live
+/// port under the same policy is refused because direct TCP stays denied.
+fn run_connect_allowed(ctx: &Context, dir: &Path) -> Result<(), String> {
+    let proxy_port = next_port();
+    let other_port = next_port();
+    let policy = dir.join("connect-allowed.json");
+    std::fs::write(
+        &policy,
+        format!(
+            r#"{{"filesystem":{{"denyRead":["/"],"allowRead":["/"]}},"network":{{"httpProxyPort":{proxy_port}}}}}"#
+        ),
+    )
+    .map_err(|e| format!("write connect policy: {e}"))?;
+    let policies = [policy];
+
+    let mut proxy = listen(ctx, proxy_port)?;
+    let mut other = listen(ctx, other_port)?;
+    std::thread::sleep(Duration::from_secs(1));
+
+    let result = (|| {
+        if !sandbox_connect(ctx, &policies, proxy_port) {
+            return Err(format!("connect to proxy port {proxy_port} was denied"));
+        }
+        if sandbox_connect(ctx, &policies, other_port) {
+            return Err(format!("direct connect to port {other_port} was allowed"));
+        }
+        Ok(())
+    })();
+
+    stop(&mut proxy);
+    stop(&mut other);
+    result
+}
+
+fn listen(ctx: &Context, port: u16) -> Result<Child, String> {
+    Command::new(&ctx.nc)
+        .args(["-l", "127.0.0.1", &port.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("spawn nc listener on {port}: {e}"))
+}
+
+fn sandbox_connect(ctx: &Context, policies: &[PathBuf], port: u16) -> bool {
+    landstrip_net(ctx, PolicyFormat::Json, policies)
+        .args([&ctx.nc, "-z", "-w1", "127.0.0.1", &port.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn run_unix_allowed(

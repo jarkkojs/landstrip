@@ -51,9 +51,10 @@ name=allowUnixSockets rejects directory path | os=macos | setup=mkdir:unix-socke
 name=allowUnixSockets rejects regular file path | os=macos | setup=mkdir:unix-sockets;write:unix-sockets/not-a-socket: | policy={"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%TMP%/unix-sockets/not-a-socket"]}} | cmd=%SHELL% -c 'printf ok' | status=!0
 name=allowUnixSockets permits missing path | os=macos | setup=mkdir:unix-sockets | policy={"filesystem":{"denyRead":["/"],"allowRead":["/"]},"network":{"allowUnixSockets":["%TMP%/unix-sockets/missing.sock"]}} | cmd=%SHELL% -c 'printf ok' | status=0
 
-# --- TCP connect denial (Linux) ---
+# --- TCP connect policy ---
 
 name=denied TCP connect is reported | os=linux | policy={"network":{"httpProxyPort":1},"filesystem":{"denyRead":["/home"],"allowRead":["/usr","/lib","/lib64","/bin","/sbin","/etc"]}} | net=connect-denied
+name=httpProxyPort permits its loopback port only | os=linux,macos | net=connect-allowed
 
 # --- policy validation ---
 
