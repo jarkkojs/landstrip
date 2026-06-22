@@ -4,6 +4,7 @@
 //! Linux sandbox platform using Landlock and seccomp.
 
 pub(crate) mod fd;
+mod filter;
 mod landlock;
 mod seccomp;
 
@@ -12,8 +13,8 @@ use crate::engine::policy::AccessPolicy;
 use crate::engine::trap_fd::TrapFd;
 use anyhow::Result;
 use fd::close_inherited_fds;
+use filter::NetworkFilter;
 use landlock::{enforce_access_policy, landlock_features};
-use seccomp::NetworkFilter;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::process::CommandExt;
 use std::process::{self, Command};
@@ -28,7 +29,7 @@ pub(crate) fn execute(
     let network = &policy.network_access;
     let unrestricted_network = network.is_unrestricted();
     let landlock_features = landlock_features()?;
-    if seccomp::needs_unix_socket_broker(&network.unix_socket_access) {
+    if filter::needs_unix_socket_broker(&network.unix_socket_access) {
         let engine = if landlock_features.resolve_unix {
             "landlock"
         } else {
@@ -37,11 +38,11 @@ pub(crate) fn execute(
         log::debug!("linux: unix socket policy with {engine} enabled");
     }
 
-    let needs_fs_broker = seccomp::needs_filesystem_broker(policy) || trap_fd.is_enabled();
+    let needs_fs_broker = filter::needs_filesystem_broker(policy) || trap_fd.is_enabled();
     let needs_network_broker = !unrestricted_network
         && (network.local_tcp_bind
             || !network.connect_tcp_ports.is_empty()
-            || seccomp::needs_unix_socket_broker(&network.unix_socket_access));
+            || filter::needs_unix_socket_broker(&network.unix_socket_access));
 
     if needs_network_broker || needs_fs_broker {
         let status = seccomp::run_broker(
@@ -60,16 +61,16 @@ pub(crate) fn execute(
     enforce_access_policy(policy, landlock_features)?;
 
     if !unrestricted_network {
-        let filter = seccomp::network_filter(
+        let filters = filter::network_filter(
             NetworkFilter {
                 notify_bind: false,
                 notify_connect: false,
                 notify_filesystem: false,
-                unix_sockets: seccomp::unix_socket_filter(&network.unix_socket_access),
+                unix_sockets: filter::unix_socket_filter(&network.unix_socket_access),
             },
             true,
         )?;
-        filter.load()?;
+        filters.load()?;
     }
     close_inherited_fds();
     let error = Command::new(tool).args(args).exec();
