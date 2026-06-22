@@ -14,9 +14,9 @@
 
 use crate::config::{SandboxFilesystem, SandboxNetwork, SandboxWindows};
 #[cfg(not(target_os = "macos"))]
-use crate::paths::normalize_path;
-use crate::paths::{normalize_path_lexically, normalize_roots};
-use crate::traversal::subtract_denied_roots;
+use crate::engine::paths::normalize_path;
+use crate::engine::paths::{normalize_path_lexically, normalize_roots};
+use crate::engine::traversal::subtract_denied_roots;
 use anyhow::Result;
 use rayon::prelude::*;
 use std::env;

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
-use crate::paths::normalize_roots;
-use crate::policy::AccessPolicyError;
+use crate::engine::paths::normalize_roots;
+use crate::engine::policy::AccessPolicyError;
 use anyhow::Result;
 use rayon::prelude::*;
 use std::fs;

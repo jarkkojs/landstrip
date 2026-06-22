@@ -7,9 +7,9 @@ pub(crate) mod fd;
 mod landlock;
 mod seccomp;
 
-use crate::error::Error;
-use crate::policy::AccessPolicy;
-use crate::trap_fd::TrapFd;
+use crate::engine::error::Error;
+use crate::engine::policy::AccessPolicy;
+use crate::engine::trap_fd::TrapFd;
 use anyhow::Result;
 use fd::close_inherited_fds;
 use landlock::{enforce_access_policy, landlock_features};

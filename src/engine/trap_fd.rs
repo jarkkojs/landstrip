@@ -4,7 +4,7 @@
 //! Separate file descriptor for landstrip trap response blocks.
 
 #[cfg(target_os = "linux")]
-use crate::trap::Trap;
+use crate::engine::trap::Trap;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TrapFd {

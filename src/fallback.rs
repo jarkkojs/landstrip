@@ -6,8 +6,8 @@
 //! Returns an error to communicate that the current operating system is not yet
 //! supported by landstrip.
 
-use crate::policy::AccessPolicy;
-use crate::trap_fd::TrapFd;
+use crate::engine::policy::AccessPolicy;
+use crate::engine::trap_fd::TrapFd;
 use anyhow::{Result, anyhow};
 use std::ffi::{OsStr, OsString};
 

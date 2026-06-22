@@ -7,8 +7,8 @@
 //! This gives deny traversal snapshot semantics: a removed and recreated path is
 //! a new object unless an allowed ancestor covers it.
 
-use crate::error::Error;
-use crate::policy::{AccessPolicy, ReadAccess, UnixSocketAccess};
+use crate::engine::error::Error;
+use crate::engine::policy::{AccessPolicy, ReadAccess, UnixSocketAccess};
 use anyhow::Result;
 use std::ffi::CString;
 use std::io;

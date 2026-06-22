@@ -6,8 +6,7 @@
 
 mod cli;
 mod config;
-mod error;
-mod paths;
+mod engine;
 #[cfg_attr(target_os = "linux", path = "linux/mod.rs")]
 #[cfg_attr(target_os = "macos", path = "macos.rs")]
 #[cfg_attr(target_os = "windows", path = "windows.rs")]
@@ -16,16 +15,11 @@ mod paths;
     path = "fallback.rs"
 )]
 mod platform;
-mod policy;
-#[cfg(target_os = "linux")]
-mod trap;
-mod trap_fd;
-mod traversal;
 
 use crate::cli::{Cli, parse_cli};
 use crate::config::load_settings;
-use crate::policy::resolve_policy;
-use crate::trap_fd::TrapFd;
+use crate::engine::policy::resolve_policy;
+use crate::engine::trap_fd::TrapFd;
 use anyhow::Result;
 use std::process;
 

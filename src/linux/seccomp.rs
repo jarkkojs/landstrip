@@ -14,11 +14,11 @@
 
 use super::fd::close_inherited_fds;
 use super::landlock::{LandlockFeatures, enforce_access_policy};
-use crate::error::Error as LandstripError;
-use crate::paths::{normalize_path, normalize_path_lexically};
-use crate::policy::{AccessPolicy, ReadAccess, UnixSocketAccess};
-use crate::trap::{FilesystemDenial, NetworkOperation, ProcessContext, Trap, TrapOperation};
-use crate::trap_fd::TrapFd;
+use crate::engine::error::Error as LandstripError;
+use crate::engine::paths::{normalize_path, normalize_path_lexically};
+use crate::engine::policy::{AccessPolicy, ReadAccess, UnixSocketAccess};
+use crate::engine::trap::{FilesystemDenial, NetworkOperation, ProcessContext, Trap, TrapOperation};
+use crate::engine::trap_fd::TrapFd;
 use anyhow::{Result, anyhow};
 use nix::errno::Errno;
 use nix::fcntl::{FcntlArg, fcntl};

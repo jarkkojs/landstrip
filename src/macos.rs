@@ -3,9 +3,9 @@
 
 //! macOS Seatbelt (SBPL) sandbox platform.
 
-use crate::error::Error;
-use crate::policy::{AccessPolicy, NetworkAccess, ReadAccess, UnixSocketAccess};
-use crate::trap_fd::TrapFd;
+use crate::engine::error::Error;
+use crate::engine::policy::{AccessPolicy, NetworkAccess, ReadAccess, UnixSocketAccess};
+use crate::engine::trap_fd::TrapFd;
 use anyhow::{Context, Result, anyhow};
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fmt::{self, Write};

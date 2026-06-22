@@ -3,9 +3,9 @@
 
 //! Windows sandbox platform using LPAC `AppContainer`.
 
-use crate::error::Error as LandstripError;
-use crate::policy::{AccessPolicy, AccessPolicyError, ReadAccess, WindowsPolicy};
-use crate::trap_fd::TrapFd;
+use crate::engine::error::Error as LandstripError;
+use crate::engine::policy::{AccessPolicy, AccessPolicyError, ReadAccess, WindowsPolicy};
+use crate::engine::trap_fd::TrapFd;
 use anyhow::{Error, Result, anyhow};
 use std::collections::hash_map::DefaultHasher;
 use std::ffi::{OsStr, OsString, c_void};

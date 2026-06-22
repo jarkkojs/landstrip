@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 Jarkko Sakkinen
 
-use crate::error::Error;
+use crate::engine::error::Error;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
