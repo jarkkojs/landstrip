@@ -14,8 +14,8 @@
 
 use super::fd::close_inherited_fds;
 use super::filter::{
-    NetworkFilters, RuleMap, add_socket_family_filter, add_unix_socket_filters, build_filter,
-    build_notify_filter, needs_unix_socket_broker, unix_socket_filter,
+    NetworkFilters, build_errno_filter, build_filter, build_notify_filter,
+    needs_unix_socket_broker, unix_socket_filter,
 };
 use super::landlock::{LandlockFeatures, enforce_access_policy};
 use crate::engine::error::Error as LandstripError;
@@ -122,27 +122,7 @@ pub(super) fn run_broker(
     ensure_notification_supported()?;
 
     let syscalls = NotificationSyscalls::new();
-    let mut errno_rules = RuleMap::new();
-    if needs_network {
-        add_socket_family_filter(&mut errno_rules, syscalls.socket)?;
-        add_unix_socket_filters(
-            &mut errno_rules,
-            syscalls.socket,
-            syscalls.socketpair,
-            unix_sockets,
-        )?;
-    }
-
-    let eafnosupport =
-        u32::try_from(libc::EAFNOSUPPORT).map_err(|_| LandstripError::IntegerTooLarge)?;
-    let errno = if errno_rules.is_empty() {
-        None
-    } else {
-        Some(build_filter(
-            errno_rules,
-            SeccompAction::Errno(eafnosupport),
-        )?)
-    };
+    let errno = filter::build_errno_filter(&syscalls, needs_network, unix_sockets)?;
 
     let mut notify_syscalls: Vec<i64> = Vec::new();
     if notify_bind {
@@ -965,8 +945,10 @@ impl Open {
             return Err(BrokerError::BadAddress);
         }
         Ok(Self {
-            flags: u64::from_ne_bytes(buf[0..8].try_into().map_err(|_| BrokerError::BadAddress)?) as i32,
-            mode: u64::from_ne_bytes(buf[8..16].try_into().map_err(|_| BrokerError::BadAddress)?) as u32,
+            flags: u64::from_ne_bytes(buf[0..8].try_into().map_err(|_| BrokerError::BadAddress)?)
+                as i32,
+            mode: u64::from_ne_bytes(buf[8..16].try_into().map_err(|_| BrokerError::BadAddress)?)
+                as u32,
         })
     }
 }
@@ -1340,9 +1322,7 @@ fn handle_mutation(
     let Some((index, reason)) = denial else {
         return Ok(NotificationResult::Continue);
     };
-    let (resolved, path) = slots[index]
-        .clone()
-        .ok_or(BrokerError::InvalidAddress)?;
+    let (resolved, path) = slots[index].clone().ok_or(BrokerError::InvalidAddress)?;
 
     if !query_enabled {
         denials.record(Denial::Filesystem(FilesystemDenial {

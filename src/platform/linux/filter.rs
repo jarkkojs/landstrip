@@ -36,30 +36,32 @@ struct SockFilterProg {
 
 pub(super) type RuleMap = BTreeMap<i64, Vec<SeccompRule>>;
 
-pub(super) fn network_filter(config: NetworkFilter, needs_network: bool) -> Result<NetworkFilters> {
-    let syscalls = NotificationSyscalls::new();
+pub(super) fn build_errno_filter(
+    syscalls: &NotificationSyscalls,
+    needs_network: bool,
+    unix_sockets: UnixSocketFilter,
+) -> Result<Option<BpfProgram>> {
     let mut errno_rules = RuleMap::new();
-
     if needs_network {
         add_socket_family_filter(&mut errno_rules, syscalls.socket)?;
         add_unix_socket_filters(
             &mut errno_rules,
             syscalls.socket,
             syscalls.socketpair,
-            config.unix_sockets,
+            unix_sockets,
         )?;
     }
-
+    if errno_rules.is_empty() {
+        return Ok(None);
+    }
     let eafnosupport =
         u32::try_from(libc::EAFNOSUPPORT).map_err(|_| LandstripError::IntegerTooLarge)?;
-    let errno = if errno_rules.is_empty() {
-        None
-    } else {
-        Some(build_filter(
-            errno_rules,
-            SeccompAction::Errno(eafnosupport),
-        )?)
-    };
+    build_filter(errno_rules, SeccompAction::Errno(eafnosupport)).map(Some)
+}
+
+pub(super) fn network_filter(config: NetworkFilter, needs_network: bool) -> Result<NetworkFilters> {
+    let syscalls = NotificationSyscalls::new();
+    let errno = build_errno_filter(&syscalls, needs_network, config.unix_sockets)?;
     let notify = if config.notify_bind || config.notify_connect || config.notify_filesystem {
         let mut notify_syscalls = Vec::new();
         if config.notify_bind {

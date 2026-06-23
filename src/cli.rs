@@ -57,7 +57,6 @@ struct CliOptions {
     /// write landstrip trap responses to an already-open file descriptor
     #[argh(option, from_str_fn(parse_trap_fd))]
     trap_fd: Option<i32>,
-
 }
 
 #[derive(Debug)]
