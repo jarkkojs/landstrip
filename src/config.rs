@@ -68,6 +68,7 @@ pub(crate) fn load_settings(policy_paths: &[PathBuf], format: PolicyFormat) -> R
         merge_json(&mut merged, value);
         serde_json::from_value(merged).context("policy stdin")
     } else {
+        let mut last_path = &policy_paths[0];
         for path in policy_paths {
             log::debug!("config: {}", path.display());
 
@@ -76,9 +77,10 @@ pub(crate) fn load_settings(policy_paths: &[PathBuf], format: PolicyFormat) -> R
             let value = parse_policy_document(&document, format)
                 .with_context(|| format!("policy file {}", path.display()))?;
             merge_json(&mut merged, value);
+            last_path = path;
         }
         serde_json::from_value(merged)
-            .with_context(|| format!("policy file {}", policy_paths[0].display()))
+            .with_context(|| format!("policy file {}", last_path.display()))
     }
 }
 
