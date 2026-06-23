@@ -58,9 +58,6 @@ struct CliOptions {
     #[argh(option, from_str_fn(parse_trap_fd))]
     trap_fd: Option<i32>,
 
-    /// tool to run inside the sandbox, followed by its arguments
-    #[argh(positional)]
-    tool: Option<String>,
 }
 
 #[derive(Debug)]
@@ -109,7 +106,6 @@ fn parse_cli_action(
         return Err(tool_required_usage(&program_name));
     }
 
-    debug_assert!(options.tool.is_none());
     let mut tool_tail = tool_tail.into_iter();
     let tool = tool_tail
         .next()

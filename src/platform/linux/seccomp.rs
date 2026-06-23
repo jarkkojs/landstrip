@@ -965,8 +965,8 @@ impl Open {
             return Err(BrokerError::BadAddress);
         }
         Ok(Self {
-            flags: u64::from_ne_bytes(buf[0..8].try_into().unwrap()) as i32,
-            mode: u64::from_ne_bytes(buf[8..16].try_into().unwrap()) as u32,
+            flags: u64::from_ne_bytes(buf[0..8].try_into().map_err(|_| BrokerError::BadAddress)?) as i32,
+            mode: u64::from_ne_bytes(buf[8..16].try_into().map_err(|_| BrokerError::BadAddress)?) as u32,
         })
     }
 }
@@ -1342,7 +1342,7 @@ fn handle_mutation(
     };
     let (resolved, path) = slots[index]
         .clone()
-        .expect("a denied slot is always resolved");
+        .ok_or(BrokerError::InvalidAddress)?;
 
     if !query_enabled {
         denials.record(Denial::Filesystem(FilesystemDenial {
