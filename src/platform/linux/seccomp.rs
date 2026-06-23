@@ -14,8 +14,8 @@
 
 use super::fd::close_inherited_fds;
 use super::filter::{
-    NetworkFilters, build_errno_filter, build_filter, build_notify_filter,
-    needs_unix_socket_broker, unix_socket_filter,
+    NetworkFilters, build_errno_filter, build_notify_filter, needs_unix_socket_broker,
+    unix_socket_filter,
 };
 use super::landlock::{LandlockFeatures, enforce_access_policy};
 use crate::engine::error::Error as LandstripError;
@@ -33,7 +33,6 @@ use nix::sys::socket::{ControlMessage, ControlMessageOwned, MsgFlags, recvmsg, s
 use nix::sys::uio::{RemoteIoVec, process_vm_readv};
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, fork};
-use seccompiler::SeccompAction;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::ffi::{CString, OsStr, OsString};
