@@ -45,8 +45,7 @@ struct CliOptions {
     #[argh(switch, short = 'V')]
     version: bool,
 
-    /// policy file; repeat to merge; stdin when omitted; .json/.yaml/.yml paths
-    /// are also detected positionally before the tool
+    /// policy file; repeat to merge; stdin when omitted
     #[argh(option, short = 'p', from_str_fn(parse_policy_path))]
     policy: Vec<PathBuf>,
 
@@ -144,26 +143,12 @@ fn split_cli_args(args: impl IntoIterator<Item = OsString>) -> (Vec<OsString>, V
             continue;
         }
 
-        if is_policy_path(&arg.to_string_lossy()) {
-            option_args.push(OsString::from("-p"));
-            option_args.push(arg);
-            continue;
-        }
-
         let mut tool_tail = vec![arg];
         tool_tail.extend(args);
         return (option_args, tool_tail);
     }
 
     (option_args, Vec::new())
-}
-
-fn is_policy_path(arg: &str) -> bool {
-    Path::new(arg).extension().is_some_and(|ext| {
-        ext.eq_ignore_ascii_case("json")
-            || ext.eq_ignore_ascii_case("yaml")
-            || ext.eq_ignore_ascii_case("yml")
-    })
 }
 
 fn take_option_value(
