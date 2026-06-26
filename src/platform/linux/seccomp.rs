@@ -19,7 +19,7 @@ use super::filter::{
 };
 use super::landlock::{LandlockFeatures, enforce_access_policy};
 use crate::engine::error::Error as LandstripError;
-use crate::engine::paths::{normalize_path, normalize_path_lexically};
+use crate::engine::paths::{normalize_path, normalize_path_lexically, normalize_path_nofollow};
 use crate::engine::policy::{AccessPolicy, ReadAccess, UnixSocketAccess};
 use crate::engine::trap::{
     FilesystemDenial, NetworkOperation, ProcessContext, Trap, TrapOperation,
@@ -1119,6 +1119,25 @@ struct Syscall {
     landlock_backed: bool,
 }
 
+impl Syscall {
+    /// Whether this invocation targets the symlink itself rather than what it
+    /// resolves to: an inherently no-follow call (`lchown`, `lsetxattr`,
+    /// `lremovexattr`) or an `*at` call carrying `AT_SYMLINK_NOFOLLOW`. The policy
+    /// check and the broker must then act on the link, not its target.
+    fn no_follow(&self, args: &[u64; 6]) -> bool {
+        // The flags argument is an int; truncating to i32 recovers it from the
+        // u64 register slot the same way the dirfd arguments are read.
+        #[allow(clippy::cast_possible_truncation)]
+        let flag = |index: usize| args[index] as i32 & libc::AT_SYMLINK_NOFOLLOW != 0;
+        match self.name {
+            "lchown" | "lsetxattr" | "lremovexattr" => true,
+            "fchownat" => flag(4),
+            "fchmodat" | "utimensat" => flag(3),
+            _ => false,
+        }
+    }
+}
+
 const MUTATION_SYSCALLS: &[Syscall] = &[
     Syscall {
         nr: Some(libc::SYS_renameat2),
@@ -1293,6 +1312,7 @@ fn handle_mutation(
 
     let mut slots: Vec<Option<(PathBuf, PathBuf)>> = Vec::with_capacity(spec.paths.len());
     let mut denial: Option<(usize, &'static str)> = None;
+    let no_follow = spec.no_follow(&request.data.args);
     for (index, (dirfd_arg, path_arg)) in spec.paths.iter().enumerate() {
         let dirfd = match dirfd_arg {
             // args[i] is an i32 dirfd (including AT_FDCWD=-100) stored as u64.
@@ -1307,7 +1327,13 @@ fn handle_mutation(
             continue;
         };
         let raw = resolve_child_path(pid, dirfd, &path)?;
-        let resolved = normalize_path(&raw);
+        // No-follow ops act on the link itself: canonicalize the parent but keep
+        // the final component so the policy gates the symlink, not its target.
+        let resolved = if no_follow {
+            normalize_path_nofollow(&raw)
+        } else {
+            normalize_path(&raw)
+        };
         if denial.is_none() {
             let lexical = normalize_path_lexically(&raw);
             let surface_allow_miss = query_enabled || !spec.landlock_backed;
@@ -1478,7 +1504,11 @@ impl Grant {
             _ => return Ok(None),
         };
 
-        Ok(Some(Grant::Mutation(MutationGrant { op, anchors })))
+        Ok(Some(Grant::Mutation(MutationGrant {
+            op,
+            anchors,
+            no_follow: spec.no_follow(args),
+        })))
     }
 }
 
@@ -1703,13 +1733,22 @@ fn run_mutation(grant: &MutationGrant) -> std::result::Result<(), i32> {
             unsafe { libc::chmod(path.as_ptr(), *mode) }
         }
         MutationOp::Chown { uid, gid } => {
-            let (_fd, path) = pin_target(at)?;
-            unsafe { libc::chown(path.as_ptr(), *uid, *gid) }
+            if grant.no_follow {
+                // Act on the link itself; the parent dir fd is already pinned.
+                unsafe { libc::fchownat(dir, name, *uid, *gid, libc::AT_SYMLINK_NOFOLLOW) }
+            } else {
+                let (_fd, path) = pin_target(at)?;
+                unsafe { libc::chown(path.as_ptr(), *uid, *gid) }
+            }
         }
         MutationOp::Utimes { times } => {
-            let (_fd, path) = pin_target(at)?;
             let ptr = times.as_ref().map_or(ptr::null(), |t| t.as_ptr());
-            unsafe { libc::utimensat(libc::AT_FDCWD, path.as_ptr(), ptr, 0) }
+            if grant.no_follow {
+                unsafe { libc::utimensat(dir, name, ptr, libc::AT_SYMLINK_NOFOLLOW) }
+            } else {
+                let (_fd, path) = pin_target(at)?;
+                unsafe { libc::utimensat(libc::AT_FDCWD, path.as_ptr(), ptr, 0) }
+            }
         }
         MutationOp::SetXattr { name, value, flags } => {
             let (_fd, path) = pin_target(at)?;
@@ -2026,6 +2065,9 @@ struct MutationGrant {
     op: MutationOp,
     /// Anchors for each path argument, in the syscall's path order.
     anchors: Vec<Anchor>,
+    /// The op targets the link itself (`lchown`, or `*at` with
+    /// `AT_SYMLINK_NOFOLLOW`); execute it without following the final symlink.
+    no_follow: bool,
 }
 
 enum MutationOp {

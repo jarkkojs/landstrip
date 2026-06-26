@@ -96,6 +96,11 @@ name=denyWrite blocks removing a symlink ancestor | os=linux | setup=mkdir:symli
 name=denyWrite blocks symlink-swap replacement attack | os=linux | setup=mkdir:symlink-root/decoy;write:symlink-root/decoy/secret:;symlink:decoy:symlink-root/link | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/symlink-root"],"denyWrite":["%TMP%/symlink-root/link/secret"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c 'rm "$1/link" && mkdir "$1/link" && echo evil > "$1/link/secret"' _ %TMP%/symlink-root | status=!0
 name=denyWrite permits unrelated write under symlink root | os=linux | setup=mkdir:symlink-root/decoy;write:symlink-root/decoy/secret:;symlink:decoy:symlink-root/link | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/symlink-root"],"denyWrite":["%TMP%/symlink-root/link/secret"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ %TMP%/symlink-root | status=0
 
+# --- no-follow metadata syscalls act on the link ---
+
+name=no-follow chown permits in-tree link to out-of-root target | os=linux | setup=write:denied/secret:;symlink:%TMP%/denied/secret:allowed/link | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c 'chown -h "$(id -u):$(id -g)" "$1"' _ %TMP%/allowed/link | status=0
+name=follow chown still gated on in-tree link to out-of-root target | os=linux | setup=write:denied/secret:;symlink:%TMP%/denied/secret:allowed/link | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/allowed"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c 'chown "$(id -u):$(id -g)" "$1"' _ %TMP%/allowed/link | status=!0 | out="code":"FILESYSTEM_DENIED" | out="reason":"allow_miss" | out="syscall":"fchownat"
+
 # --- glob write roots ---
 
 name=glob permits write in matched dir | os=linux,macos | setup=mkdir:globdir/match1;mkdir:globdir/match2 | policy={"network":{"allowNetwork":true},"filesystem":{"allowWrite":["%TMP%/globdir/*"],"denyRead":["/"],"allowRead":["/"]}} | cmd=%SHELL% -c ': > "$1/ok.txt"; test -f "$1/ok.txt"' _ %TMP%/globdir/match1 | status=0
