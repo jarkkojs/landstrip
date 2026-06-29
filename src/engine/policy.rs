@@ -581,6 +581,7 @@ fn resolve_sandbox_path(path: &str, base: &Path, home: Option<&Path>) -> Result<
     Ok(normalize_path_lexically(&resolved))
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn path_matches_glob_str(path: &Path, pattern: &str) -> bool {
     let path_bytes = path.to_string_lossy();
     let pattern_bytes = pattern.as_bytes();

@@ -111,6 +111,7 @@ fn render_profile(policy: &AccessPolicy) -> std::result::Result<String, fmt::Err
     writeln!(sb, "(deny default)")?;
 
     render_process_rules(&mut sb)?;
+    render_mach_rules(&mut sb)?;
     render_write_rules(
         &mut sb,
         &policy.write_roots,
@@ -127,6 +128,48 @@ fn render_process_rules(sb: &mut String) -> fmt::Result {
     writeln!(sb, "(allow process-exec)")?;
     writeln!(sb, "(allow process-fork)")?;
     writeln!(sb, "(allow sysctl-read)")
+}
+
+/// Default Mach services, matching the Anthropic sandbox-runtime (srt) base
+/// profile plus `SecurityServer` and trustd for Keychain / TLS trust.
+fn render_mach_rules(sb: &mut String) -> fmt::Result {
+    writeln!(sb, "(allow mach-lookup")?;
+    writeln!(sb, "  (global-name \"com.apple.SecurityServer\")")?;
+    writeln!(sb, "  (global-name \"com.apple.trustd.agent\")")?;
+    writeln!(sb, "  (global-name \"com.apple.audio.systemsoundserver\")")?;
+    writeln!(sb, "  (global-name \"com.apple.bsd.dirhelper\")")?;
+    writeln!(
+        sb,
+        "  (global-name \"com.apple.coreservices.launchservicesd\")"
+    )?;
+    writeln!(
+        sb,
+        "  (global-name \"com.apple.distributed_notifications@Uv3\")"
+    )?;
+    writeln!(sb, "  (global-name \"com.apple.FontObjectsServer\")")?;
+    writeln!(sb, "  (global-name \"com.apple.fonts\")")?;
+    writeln!(sb, "  (global-name \"com.apple.logd\")")?;
+    writeln!(sb, "  (global-name \"com.apple.lsd.mapdb\")")?;
+    writeln!(sb, "  (global-name \"com.apple.PowerManagement.control\")")?;
+    writeln!(sb, "  (global-name \"com.apple.securityd.xpc\")")?;
+    writeln!(sb, "  (global-name \"com.apple.system.logger\")")?;
+    writeln!(
+        sb,
+        "  (global-name \"com.apple.system.notification_center\")"
+    )?;
+    writeln!(
+        sb,
+        "  (global-name \"com.apple.system.opendirectoryd.libinfo\")"
+    )?;
+    writeln!(
+        sb,
+        "  (global-name \"com.apple.system.opendirectoryd.membership\")"
+    )?;
+    writeln!(sb, ")")?;
+    writeln!(
+        sb,
+        "(allow system-socket (require-all (socket-domain AF_SYSTEM) (socket-protocol 2)))"
+    )
 }
 
 fn render_write_rules(
@@ -165,7 +208,7 @@ fn render_write_rules(
                     }
                 }
                 Err(e) => {
-                    log::warn!("macos: failed to expand denyWrite glob {}: {e}", pattern);
+                    log::warn!("macos: failed to expand denyWrite glob {pattern}: {e}");
                 }
             }
         }
