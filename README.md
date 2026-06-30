@@ -89,22 +89,6 @@ network:
   allowNetwork: true
 ```
 
-Windows-only hardening options live under `windows`. They are optional because
-some tools, shells, JITs, and GUI helpers may rely on the blocked behaviors:
-
-```json
-{
-  "windows": {
-    "disableWin32k": true,
-    "disableExtensionPoints": true,
-    "strictHandleChecks": true,
-    "imageLoadNoRemote": true,
-    "imageLoadNoLowLabel": true,
-    "imageLoadPreferSystem32": true
-  }
-}
-```
-
 ## Filesystem Policy
 
 Write access is denied by default.  `allowWrite` paths grant write access and

@@ -4,7 +4,7 @@
 //! Windows sandbox platform using LPAC `AppContainer`.
 
 use crate::engine::error::Error as LandstripError;
-use crate::engine::policy::{AccessPolicy, AccessPolicyError, ReadAccess, WindowsPolicy};
+use crate::engine::policy::{AccessPolicy, AccessPolicyError, ReadAccess};
 use crate::engine::trap_fd::TrapFd;
 use anyhow::{Error, Result, anyhow};
 use std::collections::hash_map::DefaultHasher;
@@ -75,8 +75,7 @@ pub(crate) fn execute(
             "windows: per-port TCP filtering is unavailable; running with no network access"
         );
     }
-    let exit_code =
-        create_process_in_appcontainer(profile.sid(), tool, args, grant_network, &policy.windows)?;
+    let exit_code = create_process_in_appcontainer(profile.sid(), tool, args, grant_network)?;
     std::process::exit(i32::from_ne_bytes(exit_code.to_ne_bytes()));
 }
 
@@ -321,8 +320,15 @@ fn create_process_in_appcontainer(
     tool: &OsStr,
     args: &[OsString],
     grant_network: bool,
-    windows_policy: &WindowsPolicy,
 ) -> Result<u32> {
+    // Process mitigation policies not enabled:
+    //
+    // - `IMAGE_LOAD_PREFER_SYSTEM32` (required for MinGW/Cygwin DLL resolution)
+    // - `PROCESS_WIN32K_SYSCALL_DISABLE` (required for GUI tooling)
+    const MITIGATION_POLICY: u64 = (1u64 << 32)  // DisableExtensionPoints
+        | (1u64 << 48)  // FontDisable
+        | (1u64 << 52)  // ImageLoadNoRemote
+        | (1u64 << 56); // ImageLoadNoLowLabel
     let command_line = command_line(tool, args)?;
     let mut command_line = wide_string(&command_line);
     let mut startup_info = unsafe { mem::zeroed::<STARTUPINFOEXW>() };
@@ -331,8 +337,8 @@ fn create_process_in_appcontainer(
 
     let job = SandboxJob::new()?;
     let mut job_handle = job.as_raw();
-    let mut mitigation_policy = windows_policy.mitigation_policy;
-    let attribute_count = if mitigation_policy == 0 { 3 } else { 4 };
+    let mut mitigation_policy = MITIGATION_POLICY;
+    let attribute_count = 4;
     let mut attribute_list = ProcThreadAttributeList::new(attribute_count)?;
     let mut network_capabilities = NetworkCapabilities::new(grant_network)?;
     let mut capabilities = SECURITY_CAPABILITIES {
